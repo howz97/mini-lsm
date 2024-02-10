@@ -2,10 +2,10 @@
 
 use std::ops::Bound;
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
@@ -37,13 +37,23 @@ pub(crate) fn map_bound(bound: Bound<&[u8]>) -> Bound<Bytes> {
 
 impl MemTable {
     /// Create a new mem-table.
-    pub fn create(_id: usize) -> Self {
-        unimplemented!()
+    pub fn create(id: usize) -> Self {
+        MemTable {
+            map: Arc::new(SkipMap::new()),
+            wal: None,
+            id,
+            approximate_size: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     /// Create a new mem-table with WAL
-    pub fn create_with_wal(_id: usize, _path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn create_with_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
+        Ok(MemTable {
+            map: Arc::new(SkipMap::new()),
+            wal: Some(Wal::create(path)?),
+            id,
+            approximate_size: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     /// Create a memtable from WAL
@@ -51,7 +61,7 @@ impl MemTable {
         unimplemented!()
     }
 
-    pub fn for_testing_put_slice(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn for_testing_put_slice(&self, key: &[u8], value: &[u8]) -> Result<usize> {
         self.put(key, value)
     }
 
@@ -68,16 +78,21 @@ impl MemTable {
     }
 
     /// Get a value by key.
-    pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        unimplemented!()
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        self.map.get(key).map(|ent| ent.value().to_owned())
     }
 
     /// Put a key-value pair into the mem-table.
     ///
     /// In week 1, day 1, simply put the key-value pair into the skipmap.
     /// In week 2, day 6, also flush the data to WAL.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<usize> {
+        let sz = self
+            .approximate_size
+            .fetch_add(key.len() + value.len(), Ordering::Relaxed);
+        self.map
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
+        Ok(sz)
     }
 
     pub fn sync_wal(&self) -> Result<()> {
