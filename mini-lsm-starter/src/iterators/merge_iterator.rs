@@ -1,10 +1,10 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::cmp::{self};
+use std::cmp::{self, Ordering};
 use std::collections::BinaryHeap;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 
 use crate::key::KeySlice;
 
@@ -47,7 +47,16 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let iters = iters
+            .into_iter()
+            .filter(|it| it.is_valid())
+            .enumerate()
+            .map(|(i, it)| HeapWrapper(i, it))
+            .collect();
+        Self {
+            iters,
+            current: None,
+        }
     }
 }
 
@@ -57,18 +66,33 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.iters.peek().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.iters.peek().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.iters.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let oldkey = self.key().to_key_vec();
+        let oldk_sli = oldkey.as_key_slice();
+        while self.is_valid() {
+            let mut it = self.iters.pop().unwrap();
+            it.1.next()?;
+            if it.1.is_valid() {
+                self.iters.push(it);
+            } else if !self.is_valid() {
+                return Ok(());
+            }
+            assert!(self.key().cmp(&oldk_sli) != Ordering::Less);
+            if self.key().cmp(&oldk_sli) == Ordering::Greater {
+                break;
+            }
+        }
+        Ok(())
     }
 }
