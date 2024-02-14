@@ -54,6 +54,14 @@ impl Block {
         &self.data[off_k..off_k + sz_k]
     }
 
+    pub fn first_key(&self) -> &[u8] {
+        self.key_at(0)
+    }
+
+    pub fn last_key(&self) -> &[u8] {
+        self.key_at(self.offsets[self.offsets.len() - 1])
+    }
+
     pub fn entry_i(&self, idx: usize) -> (&[u8], usize, usize) {
         let mut offset = self.offsets[idx] as usize;
         let key = self.key_at(offset as u16);

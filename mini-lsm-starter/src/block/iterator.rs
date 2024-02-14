@@ -1,13 +1,10 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::{process::id, sync::Arc};
-
-use bytes::Bytes;
-
-use crate::key::{Key, KeySlice, KeyVec};
+use std::sync::Arc;
 
 use super::Block;
+use crate::key::{KeySlice, KeyVec};
 
 /// Iterates on a block.
 pub struct BlockIterator {
@@ -35,6 +32,19 @@ impl BlockIterator {
         }
     }
 
+    pub fn dummy() -> Self {
+        Self {
+            block: Arc::new(Block {
+                data: Vec::new(),
+                offsets: Vec::new(),
+            }),
+            key: KeyVec::new(),
+            value_range: (0, 0),
+            idx: 0,
+            first_key: KeyVec::new(),
+        }
+    }
+
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
         let (k, lo, hi) = block.entry_i(0);
@@ -50,20 +60,9 @@ impl BlockIterator {
 
     /// Creates a block iterator and seek to the first key that >= `key`.
     pub fn create_and_seek_to_key(block: Arc<Block>, key: KeySlice) -> Self {
-        let idx = block.index_ge(key);
-        if idx < block.offsets.len() {
-            let (k, lo, hi) = block.entry_i(idx);
-            let first_key = KeyVec::from_vec(k.to_vec());
-            Self {
-                block,
-                key: first_key.clone(),
-                value_range: (lo, hi),
-                idx,
-                first_key,
-            }
-        } else {
-            Self::new(block)
-        }
+        let mut blk_it = Self::new(block);
+        blk_it.seek_to_key(key);
+        blk_it
     }
 
     /// Returns the key of the current entry.
@@ -89,17 +88,17 @@ impl BlockIterator {
 
     /// Move to the next key in the block.
     pub fn next(&mut self) {
-        self.to_index(self.idx + 1)
+        self.reindex(self.idx + 1)
     }
 
     /// Seek to the first key that >= `key`.
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
-        self.to_index(self.block.index_ge(key))
+        self.reindex(self.block.index_ge(key))
     }
 
-    fn to_index(&mut self, idx: usize) {
+    fn reindex(&mut self, idx: usize) {
         self.idx = idx;
         if self.idx < self.block.offsets.len() {
             let (k, lo, hi) = self.block.entry_i(self.idx);
