@@ -1,7 +1,9 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::Result;
+use std::cmp::{min, Ordering};
+
+use anyhow::{Ok, Result};
 
 use super::StorageIterator;
 
@@ -10,7 +12,6 @@ use super::StorageIterator;
 pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
-    // Add fields as need
 }
 
 impl<
@@ -19,7 +20,7 @@ impl<
     > TwoMergeIterator<A, B>
 {
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        Ok(Self { a, b })
     }
 }
 
@@ -31,18 +32,43 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if !self.a.is_valid() {
+            self.b.key()
+        } else if !self.b.is_valid() {
+            self.a.key()
+        } else {
+            min(self.a.key(), self.b.key())
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if !self.a.is_valid() {
+            self.b.value()
+        } else if !self.b.is_valid() {
+            self.a.value()
+        } else if self.a.key().cmp(&self.b.key()) == Ordering::Greater {
+            self.b.value()
+        } else {
+            self.a.value()
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.a.is_valid() || self.b.is_valid()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if !self.a.is_valid() {
+            self.b.next()
+        } else if !self.b.is_valid() {
+            self.a.next()
+        } else {
+            let ord = self.a.key().cmp(&self.b.key());
+            match ord {
+                Ordering::Less => self.a.next(),
+                Ordering::Equal => self.a.next().and(self.b.next()),
+                Ordering::Greater => self.b.next(),
+            }
+        }
     }
 }

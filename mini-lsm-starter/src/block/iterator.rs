@@ -95,7 +95,7 @@ impl BlockIterator {
     /// Note: You should assume the key-value pairs in the block are sorted when being added by
     /// callers.
     pub fn seek_to_key(&mut self, key: KeySlice) {
-        self.reindex(self.block.index_ge(key))
+        self.reindex(self.block.index(key))
     }
 
     fn reindex(&mut self, idx: usize) {

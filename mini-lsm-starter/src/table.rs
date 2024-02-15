@@ -7,6 +7,7 @@ mod iterator;
 
 use std::cmp::Ordering;
 use std::fs::File;
+use std::ops::Bound;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
+use crate::iterators::StorageIterator;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 
@@ -218,6 +220,42 @@ impl SsTable {
         }
     }
 
+    pub fn get(&self, key: KeySlice) -> Result<Option<Bytes>> {
+        let idx = self.find_block_idx(key);
+        if idx < self.num_of_blocks() {
+            let blk = self.read_block_cached(idx)?;
+            let offs = blk.index(key);
+            if offs < blk.offsets.len() {
+                let (k, lo, hi) = blk.entry_i(offs);
+                if key.cmp(&KeySlice::from_slice(k)) == Ordering::Equal {
+                    return Ok(Some(Bytes::copy_from_slice(&blk.data[lo..hi])));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn scan(
+        table: Arc<Self>,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Result<SsTableIterator> {
+        match lower {
+            Bound::Included(lo) => {
+                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo))
+            }
+            Bound::Excluded(lo) => {
+                let lower = KeySlice::from_slice(lo);
+                let mut it = SsTableIterator::create_and_seek_to_key(table, lower)?;
+                if it.key().cmp(&lower) == Ordering::Equal {
+                    it.next()?;
+                }
+                Ok(it)
+            }
+            Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table),
+        }
+    }
+
     /// Get number of data blocks.
     pub fn num_of_blocks(&self) -> usize {
         self.block_meta.len()
@@ -241,14 +279,5 @@ impl SsTable {
 
     pub fn max_ts(&self) -> u64 {
         self.max_ts
-    }
-
-    pub fn block_size(&self, i: usize) -> usize {
-        assert!(i < self.block_meta.len());
-        if i + 1 < self.num_of_blocks() {
-            self.block_meta[i + 1].offset - self.block_meta[i].offset
-        } else {
-            self.block_meta_offset - self.block_meta[i].offset
-        }
     }
 }
