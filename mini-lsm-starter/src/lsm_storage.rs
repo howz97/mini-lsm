@@ -16,11 +16,13 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -284,20 +286,26 @@ impl LsmStorageInner {
         if let Some(v) = state.memtable.get(key) {
             if v.is_empty() {
                 return Ok(None);
-            } else {
-                return Ok(Some(v));
             }
+            return Ok(Some(v));
         }
         for imt in &state.imm_memtables {
             if let Some(v) = imt.get(key) {
                 if v.is_empty() {
                     return Ok(None);
-                } else {
-                    return Ok(Some(v));
                 }
+                return Ok(Some(v));
             }
         }
-        // TODO: scan SST
+        for tid in &state.l0_sstables {
+            let sst = state.sstables.get(tid).unwrap();
+            if let Some(v) = sst.get(KeySlice::from_slice(key))? {
+                if v.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(v));
+            }
+        }
         Ok(None)
     }
 
@@ -377,7 +385,18 @@ impl LsmStorageInner {
         for imm in &state.imm_memtables {
             all_iter.push(Box::new(imm.scan(lower, upper)));
         }
-        let miter = MergeIterator::create(all_iter);
-        Ok(FusedIterator::new(LsmIterator::new(miter)?))
+        let merg_mem = MergeIterator::create(all_iter);
+        let all_iter: Result<Vec<Box<SsTableIterator>>> = state
+            .l0_sstables
+            .iter()
+            .map(|tid| {
+                let table = state.sstables.get(tid).unwrap().clone();
+                SsTable::scan(table, lower, upper).map(Box::new)
+            })
+            .collect();
+        let merg_sst = MergeIterator::create(all_iter?);
+        Ok(FusedIterator::new(LsmIterator::new(
+            TwoMergeIterator::create(merg_mem, merg_sst)?,
+        )?))
     }
 }

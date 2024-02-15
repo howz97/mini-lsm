@@ -37,7 +37,7 @@ impl Block {
         Self { data, offsets }
     }
 
-    pub fn index_ge(&self, key: KeySlice) -> usize {
+    pub fn index(&self, key: KeySlice) -> usize {
         match self
             .offsets
             .binary_search_by_key(&key.raw_ref(), |&off| self.key_at(off))
