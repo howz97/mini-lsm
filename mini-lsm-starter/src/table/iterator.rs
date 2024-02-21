@@ -1,18 +1,18 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::sync::Arc;
-
-use anyhow::{Ok, Result};
-
 use super::SsTable;
 use crate::{block::BlockIterator, iterators::StorageIterator, key::KeySlice};
+use anyhow::Result;
+use bytes::Bytes;
+use std::{cmp::Ordering, ops::Bound, sync::Arc};
 
 /// An iterator over the contents of an SSTable.
 pub struct SsTableIterator {
     table: Arc<SsTable>,
     blk_iter: BlockIterator,
     blk_idx: usize,
+    upper: Bound<Bytes>,
 }
 
 impl SsTableIterator {
@@ -23,6 +23,7 @@ impl SsTableIterator {
             table,
             blk_iter,
             blk_idx: 0,
+            upper: Bound::Unbounded,
         })
     }
 
@@ -40,6 +41,7 @@ impl SsTableIterator {
             table,
             blk_iter: BlockIterator::dummy(),
             blk_idx: 0,
+            upper: Bound::Unbounded,
         };
         iter.seek_to_key(key)?;
         Ok(iter)
@@ -55,6 +57,10 @@ impl SsTableIterator {
             self.blk_iter = BlockIterator::create_and_seek_to_key(block, key);
         }
         Ok(())
+    }
+
+    pub fn set_upper(&mut self, upper: Bound<Bytes>) {
+        self.upper = upper
     }
 }
 
@@ -74,6 +80,15 @@ impl StorageIterator for SsTableIterator {
     /// Return whether the current block iterator is valid or not.
     fn is_valid(&self) -> bool {
         self.blk_iter.is_valid()
+            && match &self.upper {
+                Bound::Included(up) => {
+                    self.blk_iter.key().cmp(&KeySlice::from_slice(up)) != Ordering::Greater
+                }
+                Bound::Excluded(up) => {
+                    self.blk_iter.key().cmp(&KeySlice::from_slice(up)) == Ordering::Less
+                }
+                Bound::Unbounded => true,
+            }
     }
 
     /// Move to the next `key` in the block.

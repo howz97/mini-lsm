@@ -20,6 +20,7 @@ use crate::block::Block;
 use crate::iterators::StorageIterator;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
+use crate::mem_table::map_bound;
 
 use self::bloom::Bloom;
 
@@ -240,9 +241,9 @@ impl SsTable {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<SsTableIterator> {
-        match lower {
+        let mut it = match lower {
             Bound::Included(lo) => {
-                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo))
+                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo))?
             }
             Bound::Excluded(lo) => {
                 let lower = KeySlice::from_slice(lo);
@@ -250,10 +251,12 @@ impl SsTable {
                 if it.key().cmp(&lower) == Ordering::Equal {
                     it.next()?;
                 }
-                Ok(it)
+                it
             }
-            Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table),
-        }
+            Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
+        };
+        it.set_upper(map_bound(upper));
+        Ok(it)
     }
 
     /// Get number of data blocks.

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
@@ -114,8 +114,11 @@ impl MemTable {
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
-    pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
-        unimplemented!()
+    pub fn flush(&self, builder: &mut SsTableBuilder) -> Result<()> {
+        self.map.iter().for_each(|e| {
+            builder.add(KeySlice::from_slice(e.key()), e.value());
+        });
+        Ok(())
     }
 
     pub fn id(&self) -> usize {
