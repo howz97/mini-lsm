@@ -1,5 +1,6 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
@@ -17,12 +18,12 @@ use crate::compact::{
 };
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -157,7 +158,10 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        if let Some(h) = self.flush_thread.lock().take() {
+            h.join().unwrap();
+        }
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -241,6 +245,11 @@ impl LsmStorageInner {
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
         let path = path.as_ref();
         let state = LsmStorageState::create(&options);
+        if path.exists() {
+            // TODO:
+        } else {
+            std::fs::create_dir_all(path)?;
+        }
 
         let compaction_controller = match &options.compaction_options {
             CompactionOptions::Leveled(options) => {
@@ -267,7 +276,6 @@ impl LsmStorageInner {
             mvcc: None,
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
-
         Ok(storage)
     }
 
@@ -365,7 +373,22 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _state_lock = self.state_lock.lock();
+        let memtable = self.state.read().imm_memtables.back().unwrap().clone();
+        let mut builder = SsTableBuilder::new(self.options.block_size);
+        memtable.flush(&mut builder)?;
+        let sst = builder.build(
+            memtable.id(),
+            Some(self.block_cache.clone()),
+            self.path_of_sst(memtable.id()),
+        )?;
+        {
+            let mut state = self.state.write();
+            state.imm_memtables.pop_back();
+            state.l0_sstables.insert(0, memtable.id());
+            state.sstables.insert(memtable.id(), Arc::new(sst));
+        };
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
@@ -389,9 +412,39 @@ impl LsmStorageInner {
         let all_iter: Result<Vec<Box<SsTableIterator>>> = state
             .l0_sstables
             .iter()
-            .map(|tid| {
+            .filter_map(|tid| {
                 let table = state.sstables.get(tid).unwrap().clone();
-                SsTable::scan(table, lower, upper).map(Box::new)
+                match lower {
+                    Bound::Included(lo) => {
+                        let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                        if table.last_key().cmp(&lo) == Ordering::Less {
+                            return None;
+                        }
+                    }
+                    Bound::Excluded(lo) => {
+                        let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                        if table.last_key().cmp(&lo) != Ordering::Greater {
+                            return None;
+                        }
+                    }
+                    Bound::Unbounded => {}
+                }
+                match upper {
+                    Bound::Included(up) => {
+                        let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                        if table.first_key().cmp(&up) == Ordering::Greater {
+                            return None;
+                        }
+                    }
+                    Bound::Excluded(up) => {
+                        let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                        if table.first_key().cmp(&up) != Ordering::Less {
+                            return None;
+                        }
+                    }
+                    Bound::Unbounded => {}
+                }
+                Some(SsTable::scan(table, lower, upper).map(Box::new))
             })
             .collect();
         let merg_sst = MergeIterator::create(all_iter?);
