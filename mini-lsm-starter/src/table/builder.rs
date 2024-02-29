@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 
+use super::bloom::Bloom;
 use super::{BlockMeta, FileObject, SsTable};
 use crate::key::KeyBytes;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
@@ -21,6 +22,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    keys_hash: Vec<u32>,
 }
 
 impl SsTableBuilder {
@@ -33,6 +35,7 @@ impl SsTableBuilder {
             data: Vec::with_capacity(block_size * MAX_NUM_BLOCKS),
             meta: Vec::with_capacity(MAX_NUM_BLOCKS),
             block_size,
+            keys_hash: Vec::with_capacity(64 * MAX_NUM_BLOCKS),
         }
     }
 
@@ -41,6 +44,7 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
+        self.keys_hash.push(farmhash::fingerprint32(key.raw_ref()));
         if self.builder.add(key, value) {
             return;
         }
@@ -67,26 +71,36 @@ impl SsTableBuilder {
         if !self.builder.is_empty() {
             self.split();
         }
-        let offs = self.data.len();
+        let block_meta_offset = self.data.len();
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
         let mut buf = BytesMut::new();
-        buf.put_u32(offs as u32);
+        buf.put_u32(block_meta_offset as u32);
+        self.data.extend(buf);
+
+        let bloom_offs = self.data.len();
+        let nbits = Bloom::bloom_bits_per_key(self.keys_hash.len(), 0.01);
+        let bloom = Bloom::build_from_key_hashes(&self.keys_hash, nbits);
+        bloom.encode(&mut self.data);
+        let mut buf = BytesMut::new();
+        buf.put_u32(bloom_offs as u32);
         self.data.extend(buf);
 
         let file = FileObject::create(path.as_ref(), self.data)?;
         let first_key = self.meta.first().unwrap().first_key.clone();
         let last_key = self.meta.last().unwrap().last_key.clone();
-        Ok(SsTable {
+
+        let sst = SsTable {
             file,
             block_meta: self.meta,
-            block_meta_offset: offs,
+            block_meta_offset,
             id,
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
-        })
+        };
+        Ok(sst)
     }
 
     fn split(&mut self) {

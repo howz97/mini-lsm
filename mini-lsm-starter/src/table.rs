@@ -129,8 +129,14 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let m_offs = Bytes::from(file.read(file.size() - 4, 4)?).get_u32() as u64;
-        let meta = Bytes::from(file.read(m_offs, file.size() - m_offs - 4)?);
+        let b_offs = Bytes::from(file.read(file.size() - 4, 4)?).get_u32() as u64;
+        let b_size = file.size() - b_offs - 4;
+        let b_content = file.read(b_offs, b_size)?;
+        let bloom = Bloom::decode(&b_content)?;
+
+        let m_offs = Bytes::from(file.read(b_offs - 4, 4)?).get_u32() as u64;
+        let m_size = b_offs - m_offs - 4;
+        let meta = Bytes::from(file.read(m_offs, m_size)?);
         let block_meta = BlockMeta::decode_block_meta(meta);
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
@@ -142,7 +148,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
@@ -222,6 +228,12 @@ impl SsTable {
     }
 
     pub fn get(&self, key: KeySlice) -> Result<Option<Bytes>> {
+        if let Some(bloom) = &self.bloom {
+            let h = farmhash::fingerprint32(key.raw_ref());
+            if !bloom.may_contain(h) {
+                return Ok(None);
+            }
+        }
         let idx = self.find_block_idx(key);
         if idx < self.num_of_blocks() {
             let blk = self.read_block_cached(idx)?;
