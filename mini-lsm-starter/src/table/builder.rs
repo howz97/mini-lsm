@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 
 use super::bloom::Bloom;
 use super::{BlockMeta, FileObject, SsTable};
@@ -106,8 +106,8 @@ impl SsTableBuilder {
     fn split(&mut self) {
         let block =
             std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size)).build();
-        let first_key = KeyBytes::from_bytes(Bytes::copy_from_slice(block.first_key()));
-        let last_key = KeyBytes::from_bytes(Bytes::copy_from_slice(block.last_key()));
+        let first_key = KeyBytes::from_bytes(block.first_key());
+        let last_key = KeyBytes::from_bytes(block.last_key());
         self.meta.push(BlockMeta {
             offset: self.data.len(),
             first_key,

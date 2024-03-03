@@ -240,7 +240,7 @@ impl SsTable {
             let offs = blk.index(key);
             if offs < blk.offsets.len() {
                 let (k, lo, hi) = blk.entry_i(offs);
-                if key.cmp(&KeySlice::from_slice(k)) == Ordering::Equal {
+                if key.cmp(&KeySlice::from_slice(&k)) == Ordering::Equal {
                     return Ok(Some(Bytes::copy_from_slice(&blk.data[lo..hi])));
                 }
             }

@@ -1,7 +1,7 @@
 mod builder;
 mod iterator;
 
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 pub use builder::BlockBuilder;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use iterator::BlockIterator;
@@ -38,35 +38,58 @@ impl Block {
     }
 
     pub fn index(&self, key: KeySlice) -> usize {
+        let key = KeyBytes::from_bytes(Bytes::copy_from_slice(key.raw_ref()));
         match self
             .offsets
-            .binary_search_by_key(&key.raw_ref(), |&off| self.key_at(off))
+            .binary_search_by_key(&key, |&off| KeyBytes::from_bytes(self.key_at(off)))
         {
             Ok(i) => i,
             Err(i) => i,
         }
     }
 
-    pub fn key_at(&self, offset: u16) -> &[u8] {
+    pub fn key_at(&self, offset: u16) -> Bytes {
         let offset = offset as usize;
-        let off_k = offset + 2;
-        let sz_k = Bytes::copy_from_slice(&self.data[offset..off_k]).get_u16() as usize;
-        &self.data[off_k..off_k + sz_k]
+        let offs_k = offset + 4;
+        let mut lens = Bytes::copy_from_slice(&self.data[offset..offs_k]);
+        let m_len = lens.get_u16() as usize;
+        let k_len = lens.get_u16() as usize;
+        let mut key = BytesMut::with_capacity(m_len + k_len);
+        if m_len > 0 {
+            key.put_slice(&self.data[4..4 + m_len]);
+        }
+        if k_len > 0 {
+            key.put_slice(&self.data[offs_k..offs_k + k_len]);
+        }
+        key.freeze()
     }
 
-    pub fn first_key(&self) -> &[u8] {
+    pub fn first_key(&self) -> Bytes {
         self.key_at(0)
     }
 
-    pub fn last_key(&self) -> &[u8] {
-        self.key_at(self.offsets[self.offsets.len() - 1])
+    pub fn last_key(&self) -> Bytes {
+        self.key_at(*self.offsets.last().unwrap())
     }
 
-    pub fn entry_i(&self, idx: usize) -> (&[u8], usize, usize) {
+    pub fn entry_i(&self, idx: usize) -> (Bytes, usize, usize) {
         let mut offset = self.offsets[idx] as usize;
-        let key = self.key_at(offset as u16);
-        offset = offset + 2 + key.len();
-        let sz_v = Bytes::copy_from_slice(&self.data[offset..offset + 2]).get_u16() as usize;
-        (key, offset + 2, offset + 2 + sz_v)
+        let key = {
+            let offs_k = offset + 4;
+            let mut lens = Bytes::copy_from_slice(&self.data[offset..offs_k]);
+            let m_len = lens.get_u16() as usize;
+            let k_len = lens.get_u16() as usize;
+            offset = offs_k + k_len;
+            let mut key = BytesMut::with_capacity(m_len + k_len);
+            if m_len > 0 {
+                key.put_slice(&self.data[4..4 + m_len]);
+            }
+            if k_len > 0 {
+                key.put_slice(&self.data[offs_k..offs_k + k_len]);
+            }
+            key.freeze()
+        };
+        let v_len = Bytes::copy_from_slice(&self.data[offset..offset + 2]).get_u16() as usize;
+        (key, offset + 2, offset + 2 + v_len)
     }
 }
