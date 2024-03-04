@@ -67,6 +67,16 @@ impl BlockMeta {
         }
         metas
     }
+
+    pub fn compare(&self, key: KeySlice) -> Ordering {
+        if self.first_key.as_key_slice().cmp(&key) == Ordering::Greater {
+            Ordering::Greater
+        } else if self.last_key.as_key_slice().cmp(&key) == Ordering::Less {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
+    }
 }
 
 /// A file object.
@@ -208,22 +218,9 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        match self
-            .block_meta
-            .binary_search_by_key(&key, |bm| bm.first_key.as_key_slice())
-        {
+        match self.block_meta.binary_search_by(|bm| bm.compare(key)) {
             Ok(i) => i,
-            Err(i) => {
-                if i == 0 {
-                    return 0;
-                }
-                let last_k = self.block_meta[i - 1].last_key.as_key_slice();
-                if key.cmp(&last_k) == Ordering::Greater {
-                    i
-                } else {
-                    i - 1
-                }
-            }
+            Err(i) => i,
         }
     }
 
@@ -294,5 +291,49 @@ impl SsTable {
 
     pub fn max_ts(&self) -> u64 {
         self.max_ts
+    }
+
+    pub fn overlap(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+        match lower {
+            Bound::Included(lo) => {
+                let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                if self.last_key().cmp(&lo) == Ordering::Less {
+                    return false;
+                }
+            }
+            Bound::Excluded(lo) => {
+                let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                if self.last_key().cmp(&lo) != Ordering::Greater {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+        match upper {
+            Bound::Included(up) => {
+                let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                if self.first_key().cmp(&up) == Ordering::Greater {
+                    return false;
+                }
+            }
+            Bound::Excluded(up) => {
+                let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                if self.first_key().cmp(&up) != Ordering::Less {
+                    return false;
+                }
+            }
+            Bound::Unbounded => {}
+        }
+        true
+    }
+
+    pub fn compare(&self, key: KeyBytes) -> Ordering {
+        if self.first_key.cmp(&key) == Ordering::Greater {
+            Ordering::Greater
+        } else if self.last_key.cmp(&key) == Ordering::Less {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
     }
 }

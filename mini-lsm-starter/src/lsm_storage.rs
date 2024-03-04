@@ -1,13 +1,12 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -16,6 +15,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::{KeyBytes, KeySlice};
@@ -234,6 +234,17 @@ impl MiniLsm {
     }
 }
 
+macro_rules! maybe_found {
+    ($optv: expr) => {
+        if let Some(v) = $optv {
+            if v.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(v));
+        }
+    };
+}
+
 impl LsmStorageInner {
     pub(crate) fn next_sst_id(&self) -> usize {
         self.next_sst_id
@@ -291,27 +302,21 @@ impl LsmStorageInner {
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let state = self.state.read();
-        if let Some(v) = state.memtable.get(key) {
-            if v.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(v));
-        }
+        maybe_found!(state.memtable.get(key));
         for imt in &state.imm_memtables {
-            if let Some(v) = imt.get(key) {
-                if v.is_empty() {
-                    return Ok(None);
-                }
-                return Ok(Some(v));
-            }
+            maybe_found!(imt.get(key));
         }
         for tid in &state.l0_sstables {
             let sst = state.sstables.get(tid).unwrap();
-            if let Some(v) = sst.get(KeySlice::from_slice(key))? {
-                if v.is_empty() {
-                    return Ok(None);
-                }
-                return Ok(Some(v));
+            maybe_found!(sst.get(KeySlice::from_slice(key))?);
+        }
+        for (_, level) in &state.levels {
+            if let Ok(i) = level.binary_search_by(|tid| {
+                let sst = state.sstables.get(tid).unwrap();
+                sst.compare(KeyBytes::from_bytes(Bytes::copy_from_slice(key)))
+            }) {
+                let sst = state.sstables.get(&level[i]).unwrap();
+                maybe_found!(sst.get(KeySlice::from_slice(key))?);
             }
         }
         Ok(None)
@@ -403,53 +408,51 @@ impl LsmStorageInner {
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
         let state = self.state.read();
-        let mut all_iter = vec![];
-        all_iter.push(Box::new(state.memtable.scan(lower, upper)));
+
+        let mut mem_iters = vec![];
+        mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
         for imm in &state.imm_memtables {
-            all_iter.push(Box::new(imm.scan(lower, upper)));
+            mem_iters.push(Box::new(imm.scan(lower, upper)));
         }
-        let merg_mem = MergeIterator::create(all_iter);
-        let all_iter: Result<Vec<Box<SsTableIterator>>> = state
+        let mem_merge = MergeIterator::create(mem_iters);
+
+        let l0_iters: Result<Vec<Box<SsTableIterator>>> = state
             .l0_sstables
             .iter()
             .filter_map(|tid| {
                 let table = state.sstables.get(tid).unwrap().clone();
-                match lower {
-                    Bound::Included(lo) => {
-                        let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
-                        if table.last_key().cmp(&lo) == Ordering::Less {
-                            return None;
-                        }
-                    }
-                    Bound::Excluded(lo) => {
-                        let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
-                        if table.last_key().cmp(&lo) != Ordering::Greater {
-                            return None;
-                        }
-                    }
-                    Bound::Unbounded => {}
-                }
-                match upper {
-                    Bound::Included(up) => {
-                        let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
-                        if table.first_key().cmp(&up) == Ordering::Greater {
-                            return None;
-                        }
-                    }
-                    Bound::Excluded(up) => {
-                        let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
-                        if table.first_key().cmp(&up) != Ordering::Less {
-                            return None;
-                        }
-                    }
-                    Bound::Unbounded => {}
+                if !table.overlap(lower, upper) {
+                    return None;
                 }
                 Some(SsTable::scan(table, lower, upper).map(Box::new))
             })
             .collect();
-        let merg_sst = MergeIterator::create(all_iter?);
-        Ok(FusedIterator::new(LsmIterator::new(
-            TwoMergeIterator::create(merg_mem, merg_sst)?,
-        )?))
+        let l0_merge = MergeIterator::create(l0_iters?);
+
+        let mut levels_concat = vec![];
+        for (_, ids) in state.levels.iter() {
+            let lo = ids.partition_point(|tid| {
+                let sst = state.sstables.get(tid).unwrap();
+                !sst.overlap(lower, upper)
+            });
+            let hi = ids[lo..].partition_point(|tid| {
+                let sst = state.sstables.get(tid).unwrap();
+                sst.overlap(lower, upper)
+            });
+            let l1_sst = ids[lo..hi]
+                .iter()
+                .map(|tid| {
+                    let sst = state.sstables.get(tid).unwrap();
+                    sst.clone()
+                })
+                .collect::<Vec<Arc<SsTable>>>();
+            let concat = SstConcatIterator::new(l1_sst, lower, upper)?;
+            levels_concat.push(Box::new(concat));
+        }
+        let levels_merge = MergeIterator::create(levels_concat);
+
+        let disk_merge = TwoMergeIterator::create(l0_merge, levels_merge)?;
+        let global_merge = TwoMergeIterator::create(mem_merge, disk_merge)?;
+        Ok(FusedIterator::new(LsmIterator::new(global_merge)?))
     }
 }
