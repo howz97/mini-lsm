@@ -1,19 +1,18 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
-use anyhow::{bail, Ok, Result};
-
 use crate::{
     iterators::{
-        merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator, StorageIterator,
+        concat_iterator::SstConcatIterator, merge_iterator::MergeIterator,
+        two_merge_iterator::TwoMergeIterator, StorageIterator,
     },
     mem_table::MemTableIterator,
     table::SsTableIterator,
 };
+use anyhow::Result;
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the tutorial for multiple times.
-type LsmIteratorInner =
-    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
+type LsmIteratorInner = TwoMergeIterator<
+    MergeIterator<MemTableIterator>,
+    TwoMergeIterator<MergeIterator<SsTableIterator>, MergeIterator<SstConcatIterator>>,
+>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
@@ -92,7 +91,7 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
 
     fn next(&mut self) -> Result<()> {
         if self.has_errored {
-            bail!("error already encountered");
+            anyhow::bail!("error already encountered");
         }
         if let Err(err) = self.iter.next() {
             self.has_errored = true;
