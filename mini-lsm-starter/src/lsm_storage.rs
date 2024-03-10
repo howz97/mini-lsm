@@ -67,6 +67,26 @@ impl LsmStorageState {
             sstables: Default::default(),
         }
     }
+
+    pub fn get_tables(&self, ids: &[usize]) -> Vec<Arc<SsTable>> {
+        ids.iter()
+            .map(|id| self.sstables.get(id).unwrap().clone())
+            .collect()
+    }
+
+    pub fn dump(&self, head: &str) {
+        println!("{head}");
+        let imm = self
+            .imm_memtables
+            .iter()
+            .map(|t| t.id())
+            .collect::<Vec<usize>>();
+        println!("mem: {} -> {:?}", self.memtable.id(), imm);
+        println!("L0: {:?}", self.l0_sstables);
+        self.levels.iter().for_each(|(lv, tables)| {
+            println!("L{lv}: {:?}", tables);
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -369,8 +389,8 @@ impl LsmStorageInner {
         let memtable = MemTable::create(self.next_sst_id());
         {
             let mut state = self.state.write();
-            let mt = state.memtable.clone();
-            state.imm_memtables.push_front(mt);
+            let imt = state.memtable.clone();
+            state.imm_memtables.push_front(imt);
             state.memtable = Arc::new(memtable);
         }
         Ok(())
@@ -389,9 +409,10 @@ impl LsmStorageInner {
         )?;
         {
             let mut state = self.state.write();
-            state.imm_memtables.pop_back();
-            state.l0_sstables.insert(0, memtable.id());
             state.sstables.insert(memtable.id(), Arc::new(sst));
+            state.l0_sstables.insert(0, memtable.id());
+            let poped = state.imm_memtables.pop_back().unwrap();
+            assert!(poped.id() == memtable.id());
         };
         Ok(())
     }
