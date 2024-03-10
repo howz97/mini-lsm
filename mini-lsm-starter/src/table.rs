@@ -198,7 +198,10 @@ impl SsTable {
         } else {
             self.block_meta_offset - offs
         };
-        let raw = self.file.read(offs as u64, sz as u64)?;
+        let raw = self
+            .file
+            .read(offs as u64, sz as u64)
+            .map_err(|e| anyhow!("read block failed: {e}"))?;
         Ok(Arc::new(Block::decode(&raw)))
     }
 
@@ -266,6 +269,10 @@ impl SsTable {
         };
         it.set_upper(map_bound(upper));
         Ok(it)
+    }
+
+    pub fn scan_all(table: Arc<Self>) -> Result<SsTableIterator> {
+        Self::scan(table, Bound::Unbounded, Bound::Unbounded)
     }
 
     /// Get number of data blocks.

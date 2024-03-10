@@ -317,6 +317,8 @@ fn main() -> Result<()> {
     let lsm = MiniLsm::open(
         args.path,
         LsmStorageOptions {
+            // block_size: 64,
+            // target_sst_size: 512,
             block_size: 4096,
             target_sst_size: 2 << 20, // 2MB
             num_memtable_limit: 3,

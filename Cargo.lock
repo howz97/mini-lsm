@@ -535,6 +535,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-skiplist",
  "farmhash",
+ "log",
  "moka",
  "nom",
  "ouroboros",
