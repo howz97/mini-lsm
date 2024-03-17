@@ -115,7 +115,16 @@ impl LsmStorageInner {
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         match task {
             CompactionTask::Leveled(_) => todo!(),
-            CompactionTask::Tiered(_) => todo!(),
+            CompactionTask::Tiered(task) => {
+                let mut iters = vec![];
+                for (_, tier) in &task.tiers {
+                    let tier_tables = self.state.read().get_tables(tier);
+                    let it = SstConcatIterator::create_and_seek_to_first(tier_tables)?;
+                    iters.push(Box::new(it));
+                }
+                let iter = MergeIterator::create(iters);
+                self.compact_core(iter)
+            }
             CompactionTask::Simple(task) => {
                 if task.upper_level.is_none() {
                     self.compact_l0l1(&task.upper_level_sst_ids, &task.lower_level_sst_ids)
@@ -124,7 +133,7 @@ impl LsmStorageInner {
                     let lower_tables = self.state.read().get_tables(&task.lower_level_sst_ids);
                     let upper_iter = SstConcatIterator::create_and_seek_to_first(upper_tables)?;
                     let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_tables)?;
-                    self.compact_core(upper_iter, lower_iter)
+                    self.compact_core(TwoMergeIterator::create(upper_iter, lower_iter)?)
                 }
             }
             CompactionTask::ForceFullCompaction {
@@ -145,17 +154,15 @@ impl LsmStorageInner {
         let l0_iter = MergeIterator::create(iters?.into_iter().map(Box::new).collect());
         let l1_sstables = self.state.read().get_tables(l1);
         let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_sstables)?;
-        self.compact_core(l0_iter, l1_iter)
+        self.compact_core(TwoMergeIterator::create(l0_iter, l1_iter)?)
     }
 
-    fn compact_core<U, L>(&self, upper: U, lower: L) -> Result<Vec<Arc<SsTable>>>
+    fn compact_core<I>(&self, mut iter: I) -> Result<Vec<Arc<SsTable>>>
     where
-        U: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>> + 'static,
-        L: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>> + 'static,
+        I: for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>> + 'static,
     {
         let sst_limit = self.options.target_sst_size;
         let mut output = vec![];
-        let mut iter = TwoMergeIterator::<U, L>::create(upper, lower)?;
         while iter.is_valid() {
             let mut builder = SsTableBuilder::new(self.options.block_size);
             while builder.estimated_size() < sst_limit {

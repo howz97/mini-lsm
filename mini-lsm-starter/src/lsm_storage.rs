@@ -410,7 +410,11 @@ impl LsmStorageInner {
         {
             let mut state = self.state.write();
             state.sstables.insert(memtable.id(), Arc::new(sst));
-            state.l0_sstables.insert(0, memtable.id());
+            if self.compaction_controller.flush_to_l0() {
+                state.l0_sstables.insert(0, memtable.id());
+            } else {
+                state.levels.insert(0, (memtable.id(), vec![memtable.id()]));
+            }
             let poped = state.imm_memtables.pop_back().unwrap();
             assert!(poped.id() == memtable.id());
         };
