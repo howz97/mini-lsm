@@ -68,9 +68,40 @@ impl LsmStorageState {
         }
     }
 
+    pub fn index_of_table(&self, lv: usize, id: usize) -> Option<usize> {
+        self.levels[lv - 1]
+            .1
+            .iter()
+            .enumerate()
+            .find(|(_, &e)| e == id)
+            .map(|(i, _)| i)
+    }
+
+    pub fn get_table(&self, id: usize) -> Arc<SsTable> {
+        self.sstables.get(&id).unwrap().clone()
+    }
+
     pub fn get_tables(&self, ids: &[usize]) -> Vec<Arc<SsTable>> {
-        ids.iter()
-            .map(|id| self.sstables.get(id).unwrap().clone())
+        ids.iter().map(|id| self.get_table(*id)).collect()
+    }
+
+    pub fn tables_overlap(
+        &self,
+        lv: usize,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Vec<usize> {
+        self.levels[lv - 1]
+            .1
+            .iter()
+            .filter_map(|tid| {
+                let sst = self.sstables.get(tid).unwrap();
+                if sst.overlap(lower, upper) {
+                    Some(*tid)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -454,24 +485,10 @@ impl LsmStorageInner {
             .collect();
         let l0_merge = MergeIterator::create(l0_iters?);
 
-        let mut levels_concat = vec![];
-        for (_, ids) in state.levels.iter() {
-            let lo = ids.partition_point(|tid| {
-                let sst = state.sstables.get(tid).unwrap();
-                !sst.overlap(lower, upper)
-            });
-            let hi = ids[lo..].partition_point(|tid| {
-                let sst = state.sstables.get(tid).unwrap();
-                sst.overlap(lower, upper)
-            });
-            let l1_sst = ids[lo..hi]
-                .iter()
-                .map(|tid| {
-                    let sst = state.sstables.get(tid).unwrap();
-                    sst.clone()
-                })
-                .collect::<Vec<Arc<SsTable>>>();
-            let concat = SstConcatIterator::new(l1_sst, lower, upper)?;
+        let mut levels_concat = Vec::with_capacity(state.levels.len());
+        for lv in 1..=state.levels.len() {
+            let tables = state.get_tables(&state.tables_overlap(lv, lower, upper));
+            let concat = SstConcatIterator::new(tables, lower, upper)?;
             levels_concat.push(Box::new(concat));
         }
         let levels_merge = MergeIterator::create(levels_concat);

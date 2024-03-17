@@ -10,7 +10,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
-use crate::table::{SsTable, SsTableBuilder};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
 use log::info;
@@ -114,7 +114,20 @@ pub enum CompactionOptions {
 impl LsmStorageInner {
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         match task {
-            CompactionTask::Leveled(_) => todo!(),
+            CompactionTask::Leveled(task) => {
+                if task.upper_level_sst_ids.len() == 1 {
+                    let up_id = task.upper_level_sst_ids.first().unwrap();
+                    let up_table = self.state.read().get_table(*up_id);
+                    let upper_iter = SsTableIterator::create_and_seek_to_first(up_table)?;
+                    let lower_ids = self.state.read().get_tables(&task.lower_level_sst_ids);
+                    let lower_iter = SstConcatIterator::create_and_seek_to_first(lower_ids)?;
+                    self.compact_core(TwoMergeIterator::create(upper_iter, lower_iter)?)
+                } else {
+                    assert!(task.upper_level.is_none());
+                    assert!(task.upper_level_sst_ids.len() > 1);
+                    self.compact_l0(&task.upper_level_sst_ids, &task.lower_level_sst_ids)
+                }
+            }
             CompactionTask::Tiered(task) => {
                 let mut iters = vec![];
                 for (_, tier) in &task.tiers {
@@ -127,7 +140,7 @@ impl LsmStorageInner {
             }
             CompactionTask::Simple(task) => {
                 if task.upper_level.is_none() {
-                    self.compact_l0l1(&task.upper_level_sst_ids, &task.lower_level_sst_ids)
+                    self.compact_l0(&task.upper_level_sst_ids, &task.lower_level_sst_ids)
                 } else {
                     let upper_tables = self.state.read().get_tables(&task.upper_level_sst_ids);
                     let lower_tables = self.state.read().get_tables(&task.lower_level_sst_ids);
@@ -139,11 +152,11 @@ impl LsmStorageInner {
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
-            } => self.compact_l0l1(l0_sstables, l1_sstables),
+            } => self.compact_l0(l0_sstables, l1_sstables),
         }
     }
 
-    fn compact_l0l1(&self, l0: &[usize], l1: &[usize]) -> Result<Vec<Arc<SsTable>>> {
+    fn compact_l0(&self, l0: &[usize], lower: &[usize]) -> Result<Vec<Arc<SsTable>>> {
         let iters: Result<Vec<_>> = self
             .state
             .read()
@@ -152,9 +165,9 @@ impl LsmStorageInner {
             .map(SsTable::scan_all)
             .collect();
         let l0_iter = MergeIterator::create(iters?.into_iter().map(Box::new).collect());
-        let l1_sstables = self.state.read().get_tables(l1);
-        let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_sstables)?;
-        self.compact_core(TwoMergeIterator::create(l0_iter, l1_iter)?)
+        let lo_sstables = self.state.read().get_tables(lower);
+        let lo_iter = SstConcatIterator::create_and_seek_to_first(lo_sstables)?;
+        self.compact_core(TwoMergeIterator::create(l0_iter, lo_iter)?)
     }
 
     fn compact_core<I>(&self, mut iter: I) -> Result<Vec<Arc<SsTable>>>
