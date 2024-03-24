@@ -80,9 +80,6 @@ impl TieredCompactionController {
             .drain(..task.tiers.len())
             .flat_map(|(_, tier)| tier)
             .collect::<Vec<usize>>();
-        dels.iter().for_each(|id| {
-            snapshot.sstables.remove(id).unwrap();
-        });
         snapshot.levels.insert(0, (output[0], output.to_vec()));
         (snapshot, dels)
     }

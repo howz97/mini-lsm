@@ -10,6 +10,7 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
@@ -252,13 +253,17 @@ impl LsmStorageInner {
                 output.push(id);
                 snapshot.sstables.insert(id, sst);
             });
-            let (result, del) = self
+            let (mut result, del) = self
                 .compaction_controller
                 .apply_compaction_result(&snapshot, &task, &output);
-            // snapshot.dump("Before snapshot");
-            // result.dump("After snapshot");
+            del.iter().for_each(|id| {
+                result.sstables.remove(id);
+            });
             snapshot = result;
             *self.state.write() = snapshot.clone();
+            if let Some(manif) = &self.manifest {
+                manif.add_record(&_state_lock, ManifestRecord::Compaction(task, output))?;
+            }
             dels.extend(del);
         }
         dels.into_iter().for_each(|id| {
