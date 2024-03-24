@@ -82,24 +82,15 @@ impl SimpleLeveledCompactionController {
         let mut snapshot = snapshot.clone();
         let mut del = vec![];
         if let Some(u) = task.upper_level {
-            let upper = &mut snapshot.levels[u - 1];
-            assert!(upper.0 == u && upper.1 == task.upper_level_sst_ids);
-            while let Some(tid) = upper.1.pop() {
-                snapshot.sstables.remove(&tid).unwrap();
-                del.push(tid);
-            }
+            let upper = &mut snapshot.levels[u - 1].1;
+            assert!(*upper == task.upper_level_sst_ids);
+            del.append(upper);
         } else {
-            for _ in 0..task.upper_level_sst_ids.len() {
-                let tid = snapshot.l0_sstables.pop().unwrap();
-                snapshot.sstables.remove(&tid).unwrap();
-                del.push(tid);
-            }
+            let n = snapshot.l0_sstables.len() - task.upper_level_sst_ids.len();
+            del.extend(snapshot.l0_sstables.drain(n..));
         }
         let lower = &mut snapshot.levels[task.lower_level - 1].1;
-        while let Some(tid) = lower.pop() {
-            snapshot.sstables.remove(&tid);
-            del.push(tid);
-        }
+        del.append(lower);
         *lower = output.to_vec();
         (snapshot, del)
     }

@@ -54,7 +54,7 @@ impl LeveledCompactionController {
         let mut targets = vec![0; self.options.max_levels];
         for t in targets.iter_mut().rev() {
             *t = target;
-            if target < self.options.base_level_size_mb {
+            if target <= self.options.base_level_size_mb {
                 break;
             }
             target /= self.options.level_size_multiplier;
@@ -167,9 +167,6 @@ impl LeveledCompactionController {
             lower_level.extend(output);
             lower_level.extend(tail);
         }
-        dels.iter().for_each(|id| {
-            snapshot.sstables.remove(id).unwrap();
-        });
         (snapshot, dels)
     }
 }
