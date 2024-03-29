@@ -202,7 +202,15 @@ impl SsTable {
             .file
             .read(offs as u64, sz as u64)
             .map_err(|e| anyhow!("read block failed: {e}"))?;
-        Ok(Arc::new(Block::decode(&raw)))
+        let checksum = Bytes::copy_from_slice(&raw[raw.len() - 4..]).get_u32();
+        let data = &raw[..raw.len() - 4];
+        if crc32fast::hash(data) != checksum {
+            return Err(anyhow!(
+                "SST {} block {block_idx} is corrupted",
+                self.sst_id()
+            ));
+        }
+        Ok(Arc::new(Block::decode(data)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)

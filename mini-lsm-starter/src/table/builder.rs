@@ -113,7 +113,10 @@ impl SsTableBuilder {
             first_key,
             last_key,
         });
-        self.data.extend(block.encode());
+        let encoded = block.encode();
+        let checksum = crc32fast::hash(&encoded);
+        self.data.extend(encoded);
+        self.data.extend(checksum.to_be_bytes());
     }
 
     #[cfg(test)]
