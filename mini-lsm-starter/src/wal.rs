@@ -3,8 +3,8 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
-use bytes::Bytes;
+use anyhow::{anyhow, Result};
+use bytes::{BufMut, Bytes, BytesMut};
 use crossbeam_skiplist::SkipMap;
 use log::warn;
 use parking_lot::Mutex;
@@ -22,24 +22,34 @@ impl Wal {
     }
 
     fn read_kvs(path: impl AsRef<Path>, skiplist: &SkipMap<Bytes, Bytes>) -> Result<()> {
-        // let size = file.metadata()?.len();
-        // let pos = reader.stream_position()?;
         let file = File::open(&path)?;
-        let mut len_buf = [0; 2];
+        let mut lenbuf = [0; 2];
+        let mut crcbuf = [0; 4];
         let mut reader = BufReader::new(file);
         loop {
+            let mut hasher = crc32fast::Hasher::default();
             // read key
-            reader.read_exact(&mut len_buf)?;
-            let len = u16::from_be_bytes(len_buf);
+            reader.read_exact(&mut lenbuf)?;
+            hasher.update(&lenbuf);
+            let len = u16::from_be_bytes(lenbuf);
             let mut buf = vec![0; len as usize];
             reader.read_exact(&mut buf)?;
+            hasher.update(&buf);
             let key = Bytes::from(buf);
             // read value
-            reader.read_exact(&mut len_buf)?;
-            let len = u16::from_be_bytes(len_buf);
+            reader.read_exact(&mut lenbuf)?;
+            hasher.update(&lenbuf);
+            let len = u16::from_be_bytes(lenbuf);
             let mut buf = vec![0; len as usize];
             reader.read_exact(&mut buf)?;
+            hasher.update(&buf);
             let val = Bytes::from(buf);
+            // read checksum
+            reader.read_exact(&mut crcbuf)?;
+            let checksum = u32::from_be_bytes(crcbuf);
+            if hasher.finalize() != checksum {
+                return Err(anyhow!("WAL record is corrupted"));
+            }
             skiplist.insert(key, val);
         }
     }
@@ -58,13 +68,13 @@ impl Wal {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let mut writer = self.file.lock();
-        let len = (key.len() as u16).to_be_bytes();
-        writer.write_all(&len)?;
-        writer.write_all(key)?;
-        let len = (value.len() as u16).to_be_bytes();
-        writer.write_all(&len)?;
-        writer.write_all(value)?;
+        let mut buf = BytesMut::with_capacity(1024);
+        buf.put_u16(key.len() as u16);
+        buf.extend(key);
+        buf.put_u16(value.len() as u16);
+        buf.extend(value);
+        buf.put_u32(crc32fast::hash(&buf));
+        self.file.lock().write_all(&buf)?;
         Ok(())
     }
 
