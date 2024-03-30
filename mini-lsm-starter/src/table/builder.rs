@@ -1,16 +1,11 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
-
-use anyhow::Result;
-use bytes::{BufMut, BytesMut};
 
 use super::bloom::Bloom;
 use super::{BlockMeta, FileObject, SsTable};
 use crate::key::KeyBytes;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
+use anyhow::Result;
 
 const MAX_NUM_BLOCKS: usize = 1024;
 
@@ -73,17 +68,17 @@ impl SsTableBuilder {
         }
         let block_meta_offset = self.data.len();
         BlockMeta::encode_block_meta(&self.meta, &mut self.data);
-        let mut buf = BytesMut::new();
-        buf.put_u32(block_meta_offset as u32);
-        self.data.extend(buf);
+        let checksum = crc32fast::hash(&self.data[block_meta_offset..]);
+        self.data.extend(checksum.to_be_bytes());
+        self.data.extend((block_meta_offset as u32).to_be_bytes());
 
         let bloom_offs = self.data.len();
         let nbits = Bloom::bloom_bits_per_key(self.keys_hash.len(), 0.01);
         let bloom = Bloom::build_from_key_hashes(&self.keys_hash, nbits);
         bloom.encode(&mut self.data);
-        let mut buf = BytesMut::new();
-        buf.put_u32(bloom_offs as u32);
-        self.data.extend(buf);
+        let checksum = crc32fast::hash(&self.data[bloom_offs..]);
+        self.data.extend(checksum.to_be_bytes());
+        self.data.extend((bloom_offs as u32).to_be_bytes());
 
         let file = FileObject::create(path.as_ref(), self.data)?;
         let first_key = self.meta.first().unwrap().first_key.clone();

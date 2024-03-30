@@ -8,6 +8,7 @@ mod iterator;
 use std::cmp::Ordering;
 use std::fs::File;
 use std::ops::Bound;
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use anyhow::{anyhow, bail, Result};
 pub use builder::SsTableBuilder;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use iterator::SsTableIterator;
+use log::warn;
 
 use crate::block::Block;
 use crate::iterators::StorageIterator;
@@ -84,13 +86,16 @@ pub struct FileObject(Option<File>, u64);
 
 impl FileObject {
     pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
         let mut data = vec![0; len as usize];
         self.0
             .as_ref()
             .unwrap()
             .read_exact_at(&mut data[..], offset)?;
         Ok(data)
+    }
+
+    pub fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        self.0.as_ref().unwrap().read_exact_at(buf, offset)
     }
 
     pub fn size(&self) -> u64 {
@@ -139,14 +144,30 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let b_offs = Bytes::from(file.read(file.size() - 4, 4)?).get_u32() as u64;
-        let b_size = file.size() - b_offs - 4;
+        let mut lenbytes = [0u8; 4];
+        file.read_exact_at(&mut lenbytes, file.size() - 4)?;
+        let b_offs = u32::from_be_bytes(lenbytes) as u64;
+        file.read_exact_at(&mut lenbytes, file.size() - 8)?;
+        let checksum = u32::from_be_bytes(lenbytes);
+        let b_size = file.size() - b_offs - 8;
         let b_content = file.read(b_offs, b_size)?;
-        let bloom = Bloom::decode(&b_content)?;
+        let bloom = if crc32fast::hash(&b_content) == checksum {
+            Some(Bloom::decode(&b_content)?)
+        } else {
+            // TODO: repair
+            warn!("SsTable {id} bloom filter is corrupted");
+            None
+        };
 
-        let m_offs = Bytes::from(file.read(b_offs - 4, 4)?).get_u32() as u64;
-        let m_size = b_offs - m_offs - 4;
+        file.read_exact_at(&mut lenbytes, b_offs - 4)?;
+        let m_offs = u32::from_be_bytes(lenbytes) as u64;
+        file.read_exact_at(&mut lenbytes, b_offs - 8)?;
+        let checksum = u32::from_be_bytes(lenbytes);
+        let m_size = b_offs - m_offs - 8;
         let meta = Bytes::from(file.read(m_offs, m_size)?);
+        if crc32fast::hash(&meta) != checksum {
+            return Err(anyhow!("SsTable {id} metadata is corrupted"));
+        }
         let block_meta = BlockMeta::decode_block_meta(meta);
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
@@ -158,7 +179,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: Some(bloom),
+            bloom,
             max_ts: 0,
         })
     }
