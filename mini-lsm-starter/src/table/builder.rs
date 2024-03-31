@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use super::bloom::Bloom;
 use super::{BlockMeta, FileObject, SsTable};
-use crate::key::KeyBytes;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 use anyhow::Result;
 
@@ -39,7 +38,7 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
-        self.keys_hash.push(farmhash::fingerprint32(key.raw_ref()));
+        self.keys_hash.push(farmhash::fingerprint32(key.key_ref()));
         if self.builder.add(key, value) {
             return;
         }
@@ -101,8 +100,8 @@ impl SsTableBuilder {
     fn split(&mut self) {
         let block =
             std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size)).build();
-        let first_key = KeyBytes::from_bytes(block.first_key());
-        let last_key = KeyBytes::from_bytes(block.last_key());
+        let first_key = block.first_key();
+        let last_key = block.last_key();
         self.meta.push(BlockMeta {
             offset: self.data.len(),
             first_key,

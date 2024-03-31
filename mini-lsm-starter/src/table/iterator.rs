@@ -1,8 +1,9 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use super::SsTable;
-use crate::{block::BlockIterator, iterators::StorageIterator, key::KeySlice};
+use crate::{
+    block::BlockIterator,
+    iterators::StorageIterator,
+    key::{KeySlice, TS_MAX, TS_MIN},
+};
 use anyhow::Result;
 use bytes::Bytes;
 use std::{cmp::Ordering, ops::Bound, sync::Arc};
@@ -82,10 +83,12 @@ impl StorageIterator for SsTableIterator {
         self.blk_iter.is_valid()
             && match &self.upper {
                 Bound::Included(up) => {
-                    self.blk_iter.key().cmp(&KeySlice::from_slice(up)) != Ordering::Greater
+                    let key = KeySlice::from_slice(&up, TS_MIN);
+                    self.blk_iter.key().cmp(&key) != Ordering::Greater
                 }
                 Bound::Excluded(up) => {
-                    self.blk_iter.key().cmp(&KeySlice::from_slice(up)) == Ordering::Less
+                    let key = KeySlice::from_slice(&up, TS_MAX);
+                    self.blk_iter.key().cmp(&key) == Ordering::Less
                 }
                 Bound::Unbounded => true,
             }

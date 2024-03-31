@@ -1,8 +1,7 @@
 use std::ops::Bound;
 
-use serde::{Deserialize, Serialize};
-
 use crate::lsm_storage::LsmStorageState;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LeveledCompactionTask {
@@ -89,8 +88,8 @@ impl LeveledCompactionController {
             let lower_lv = l + 1;
             let lower_level_sst_ids = snapshot.tables_overlap(
                 lower_lv,
-                Bound::Included(upper_table.first_key().raw_ref()),
-                Bound::Included(upper_table.last_key().raw_ref()),
+                Bound::Included(upper_table.first_key().key_ref()),
+                Bound::Included(upper_table.last_key().key_ref()),
             );
             Some(LeveledCompactionTask {
                 upper_level: max_lv,

@@ -34,7 +34,7 @@ impl SstConcatIterator {
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
-        Self::new(sstables, Bound::Included(key.raw_ref()), Bound::Unbounded)
+        Self::new(sstables, Bound::Included(key.key_ref()), Bound::Unbounded)
     }
 
     pub fn new(

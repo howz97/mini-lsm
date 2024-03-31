@@ -1,7 +1,7 @@
 use super::Block;
 use crate::key::{KeySlice, KeyVec};
 use nom::Slice;
-use std::{cmp::min, io::Write};
+use std::cmp::min;
 
 /// Builds a block.
 pub struct BlockBuilder {
@@ -36,27 +36,25 @@ impl BlockBuilder {
             assert!(self.first_key.is_empty());
             self.first_key = key.to_key_vec();
             0
-        } else if self.len() + key.len() + value.len() + 4 > self.block_size {
+        } else if self.len() + key.raw_len() + value.len() + 4 > self.block_size {
             return false;
         } else {
-            let mut m = min(self.first_key.len(), key.len());
+            let mut m = min(self.first_key.key_len(), key.key_len());
             for i in 0..m {
-                if self.first_key.raw_ref()[i] != key.raw_ref()[i] {
+                if self.first_key.key_ref()[i] != key.key_ref()[i] {
                     m = i;
                     break;
                 }
             }
-            m
+            m as u16
         };
         self.offsets.push(self.data.len() as u16);
-        let plen = (m as u16).to_be_bytes();
-        self.data.write_all(&plen).unwrap();
-        let klen = ((key.len() - m) as u16).to_be_bytes();
-        self.data.write_all(&klen).unwrap();
-        self.data.write_all(key.raw_ref().slice(m..)).unwrap();
-        let vlen = (value.len() as u16).to_be_bytes();
-        self.data.write_all(&vlen).unwrap();
-        self.data.write_all(value).unwrap();
+        self.data.extend(m.to_be_bytes());
+        self.data.extend(((key.key_len() as u16) - m).to_be_bytes());
+        self.data.extend(key.key_ref().slice(m as usize..));
+        self.data.extend(key.ts().to_be_bytes());
+        self.data.extend((value.len() as u16).to_be_bytes());
+        self.data.extend(value);
         true
     }
 

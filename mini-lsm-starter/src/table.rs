@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 pub(crate) mod bloom;
 mod builder;
 mod iterator;
@@ -20,7 +17,7 @@ use log::warn;
 
 use crate::block::Block;
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice};
+use crate::key::{KeyBytes, KeySlice, TS_MAX, TS_MIN};
 use crate::lsm_storage::BlockCache;
 use crate::mem_table::map_bound;
 
@@ -44,10 +41,12 @@ impl BlockMeta {
         let mut bbuf = BytesMut::new();
         for blk in block_meta {
             bbuf.put_u32(blk.offset as u32);
-            bbuf.put_u16(blk.first_key.len() as u16);
-            bbuf.put(blk.first_key.raw_ref());
-            bbuf.put_u16(blk.last_key.len() as u16);
-            bbuf.put(blk.last_key.raw_ref());
+            bbuf.put_u16(blk.first_key.key_len() as u16);
+            bbuf.put(blk.first_key.key_ref());
+            bbuf.put_u64(blk.first_key.ts());
+            bbuf.put_u16(blk.last_key.key_len() as u16);
+            bbuf.put(blk.last_key.key_ref());
+            bbuf.put_u64(blk.last_key.ts());
         }
         buf.extend(bbuf);
     }
@@ -57,10 +56,16 @@ impl BlockMeta {
         let mut metas = vec![];
         while buf.has_remaining() {
             let offset = buf.get_u32() as usize;
+            // first key
             let n = buf.get_u16() as usize;
-            let first_key = KeyBytes::from_bytes(buf.copy_to_bytes(n));
+            let key = buf.copy_to_bytes(n);
+            let ts = buf.get_u64();
+            let first_key = KeyBytes::from_bytes_with_ts(key, ts);
+            // last key
             let n = buf.get_u16() as usize;
-            let last_key = KeyBytes::from_bytes(buf.copy_to_bytes(n));
+            let key = buf.copy_to_bytes(n);
+            let ts = buf.get_u64();
+            let last_key = KeyBytes::from_bytes_with_ts(key, ts);
             metas.push(BlockMeta {
                 offset,
                 first_key,
@@ -258,7 +263,7 @@ impl SsTable {
 
     pub fn get(&self, key: KeySlice) -> Result<Option<Bytes>> {
         if let Some(bloom) = &self.bloom {
-            let h = farmhash::fingerprint32(key.raw_ref());
+            let h = farmhash::fingerprint32(key.key_ref());
             if !bloom.may_contain(h) {
                 return Ok(None);
             }
@@ -269,7 +274,7 @@ impl SsTable {
             let offs = blk.index(key);
             if offs < blk.offsets.len() {
                 let (k, lo, hi) = blk.entry_i(offs);
-                if key.cmp(&KeySlice::from_slice(&k)) == Ordering::Equal {
+                if key.cmp(&k.as_key_slice()) == Ordering::Equal {
                     return Ok(Some(Bytes::copy_from_slice(&blk.data[lo..hi])));
                 }
             }
@@ -284,10 +289,10 @@ impl SsTable {
     ) -> Result<SsTableIterator> {
         let mut it = match lower {
             Bound::Included(lo) => {
-                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo))?
+                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo, TS_MAX))?
             }
             Bound::Excluded(lo) => {
-                let lower = KeySlice::from_slice(lo);
+                let lower = KeySlice::from_slice(lo, TS_MIN);
                 let mut it = SsTableIterator::create_and_seek_to_key(table, lower)?;
                 if it.key().cmp(&lower) == Ordering::Equal {
                     it.next()?;
@@ -332,13 +337,13 @@ impl SsTable {
     pub fn overlap(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
         match lower {
             Bound::Included(lo) => {
-                let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                let lo = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lo), TS_MAX);
                 if self.last_key().cmp(&lo) == Ordering::Less {
                     return false;
                 }
             }
             Bound::Excluded(lo) => {
-                let lo = KeyBytes::from_bytes(Bytes::copy_from_slice(lo));
+                let lo = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lo), TS_MIN);
                 if self.last_key().cmp(&lo) != Ordering::Greater {
                     return false;
                 }
@@ -347,13 +352,13 @@ impl SsTable {
         }
         match upper {
             Bound::Included(up) => {
-                let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                let up = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(up), TS_MAX);
                 if self.first_key().cmp(&up) == Ordering::Greater {
                     return false;
                 }
             }
             Bound::Excluded(up) => {
-                let up = KeyBytes::from_bytes(Bytes::copy_from_slice(up));
+                let up = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(up), TS_MIN);
                 if self.first_key().cmp(&up) != Ordering::Less {
                     return false;
                 }

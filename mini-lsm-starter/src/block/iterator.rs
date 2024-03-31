@@ -48,7 +48,7 @@ impl BlockIterator {
     /// Creates a block iterator and seek to the first entry.
     pub fn create_and_seek_to_first(block: Arc<Block>) -> Self {
         let (k, lo, hi) = block.entry_i(0);
-        let first_key = KeyVec::from_vec(k.to_vec());
+        let first_key = KeyVec::from_vec_with_ts(k.key_ref().to_vec(), k.ts());
         Self {
             block,
             key: first_key.clone(),
@@ -102,7 +102,7 @@ impl BlockIterator {
         self.idx = idx;
         if self.idx < self.block.offsets.len() {
             let (k, lo, hi) = self.block.entry_i(self.idx);
-            self.key = KeyVec::from_vec(k.to_vec());
+            self.key = KeyVec::from_vec_with_ts(k.key_ref().to_vec(), k.ts());
             self.value_range = (lo, hi);
         }
     }

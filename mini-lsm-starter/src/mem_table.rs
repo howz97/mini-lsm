@@ -1,5 +1,3 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +9,7 @@ use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::KeySlice;
+use crate::key::{KeySlice, TS_DEFAULT};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 
@@ -134,7 +132,7 @@ impl MemTable {
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
     pub fn flush(&self, builder: &mut SsTableBuilder) -> Result<()> {
         self.map.iter().for_each(|e| {
-            builder.add(KeySlice::from_slice(e.key()), e.value());
+            builder.add(KeySlice::from_slice(e.key(), TS_DEFAULT), e.value());
         });
         Ok(())
     }
@@ -181,7 +179,7 @@ impl StorageIterator for MemTableIterator {
     }
 
     fn key(&self) -> KeySlice {
-        KeySlice::from_slice(&self.borrow_item().0)
+        KeySlice::from_slice(&self.borrow_item().0, TS_DEFAULT)
     }
 
     fn is_valid(&self) -> bool {

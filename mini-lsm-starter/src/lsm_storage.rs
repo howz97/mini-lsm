@@ -1,5 +1,3 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::ops::Bound;
@@ -19,7 +17,7 @@ use crate::compact::{
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeyBytes, KeySlice};
+use crate::key::{KeyBytes, KeySlice, TS_DEFAULT};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::MemTable;
@@ -425,15 +423,18 @@ impl LsmStorageInner {
         }
         for tid in &state.l0_sstables {
             let sst = state.sstables.get(tid).unwrap();
-            maybe_found!(sst.get(KeySlice::from_slice(key))?);
+            maybe_found!(sst.get(KeySlice::from_slice(key, TS_DEFAULT))?);
         }
         for (_, level) in &state.levels {
             if let Ok(i) = level.binary_search_by(|tid| {
                 let sst = state.sstables.get(tid).unwrap();
-                sst.compare(KeyBytes::from_bytes(Bytes::copy_from_slice(key)))
+                sst.compare(KeyBytes::from_bytes_with_ts(
+                    Bytes::copy_from_slice(key),
+                    TS_DEFAULT,
+                ))
             }) {
                 let sst = state.sstables.get(&level[i]).unwrap();
-                maybe_found!(sst.get(KeySlice::from_slice(key))?);
+                maybe_found!(sst.get(KeySlice::from_slice(key, TS_DEFAULT))?);
             }
         }
         Ok(None)
