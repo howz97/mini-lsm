@@ -2,10 +2,9 @@ use super::SsTable;
 use crate::{
     block::BlockIterator,
     iterators::StorageIterator,
-    key::{KeySlice, TS_MAX, TS_MIN},
+    key::{KeyBytes, KeySlice},
 };
 use anyhow::Result;
-use bytes::Bytes;
 use std::{cmp::Ordering, ops::Bound, sync::Arc};
 
 /// An iterator over the contents of an SSTable.
@@ -13,7 +12,7 @@ pub struct SsTableIterator {
     table: Arc<SsTable>,
     blk_iter: BlockIterator,
     blk_idx: usize,
-    upper: Bound<Bytes>,
+    upper: Bound<KeyBytes>,
 }
 
 impl SsTableIterator {
@@ -60,7 +59,7 @@ impl SsTableIterator {
         Ok(())
     }
 
-    pub fn set_upper(&mut self, upper: Bound<Bytes>) {
+    pub fn set_upper(&mut self, upper: Bound<KeyBytes>) {
         self.upper = upper
     }
 }
@@ -83,11 +82,11 @@ impl StorageIterator for SsTableIterator {
         self.blk_iter.is_valid()
             && match &self.upper {
                 Bound::Included(up) => {
-                    let key = KeySlice::from_slice(&up, TS_MIN);
+                    let key = up.as_key_slice();
                     self.blk_iter.key().cmp(&key) != Ordering::Greater
                 }
                 Bound::Excluded(up) => {
-                    let key = KeySlice::from_slice(&up, TS_MAX);
+                    let key = up.as_key_slice();
                     self.blk_iter.key().cmp(&key) == Ordering::Less
                 }
                 Bound::Unbounded => true,

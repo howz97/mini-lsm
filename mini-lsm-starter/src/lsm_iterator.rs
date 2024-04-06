@@ -19,11 +19,12 @@ pub struct LsmIterator {
 }
 
 impl LsmIterator {
-    pub(crate) fn new(mut iter: LsmIteratorInner) -> Result<Self> {
+    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
+        let mut iter = Self { inner: iter };
         if iter.is_valid() && iter.value().is_empty() {
             iter.next()?;
         }
-        Ok(Self { inner: iter })
+        Ok(iter)
     }
 }
 
@@ -43,11 +44,21 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
+        let mut prev = Vec::from(self.inner.key().key_ref());
         while self.inner.is_valid() {
             self.inner.next()?;
-            if !self.inner.is_valid() || !self.inner.value().is_empty() {
+            if !self.inner.is_valid() {
                 break;
             }
+            let key = self.inner.key().key_ref();
+            if key == prev {
+                continue;
+            }
+            if self.inner.value().is_empty() {
+                prev = Vec::from(key);
+                continue;
+            }
+            break;
         }
         Ok(())
     }
@@ -93,9 +104,11 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         if self.has_errored {
             anyhow::bail!("error already encountered");
         }
-        if let Err(err) = self.iter.next() {
-            self.has_errored = true;
-            return Err(err);
+        if self.iter.is_valid() {
+            if let Err(err) = self.iter.next() {
+                self.has_errored = true;
+                return Err(err);
+            }
         }
         Ok(())
     }

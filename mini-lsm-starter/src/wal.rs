@@ -9,6 +9,8 @@ use crossbeam_skiplist::SkipMap;
 use log::warn;
 use parking_lot::Mutex;
 
+use crate::key::{KeyBytes, KeySlice};
+
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
 }
@@ -21,10 +23,11 @@ impl Wal {
         })
     }
 
-    fn read_kvs(path: impl AsRef<Path>, skiplist: &SkipMap<Bytes, Bytes>) -> Result<()> {
+    fn read_kvs(path: impl AsRef<Path>, skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<()> {
         let file = File::open(&path)?;
         let mut lenbuf = [0; 2];
         let mut crcbuf = [0; 4];
+        let mut tsbuf = [0; 8];
         let mut reader = BufReader::new(file);
         loop {
             let mut hasher = crc32fast::Hasher::default();
@@ -35,7 +38,10 @@ impl Wal {
             let mut buf = vec![0; len as usize];
             reader.read_exact(&mut buf)?;
             hasher.update(&buf);
-            let key = Bytes::from(buf);
+            reader.read_exact(&mut tsbuf)?;
+            hasher.update(&tsbuf);
+            let ts = u64::from_be_bytes(tsbuf);
+            let key = KeyBytes::from_bytes_with_ts(Bytes::from(buf), ts);
             // read value
             reader.read_exact(&mut lenbuf)?;
             hasher.update(&lenbuf);
@@ -54,7 +60,7 @@ impl Wal {
         }
     }
 
-    pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(path: impl AsRef<Path>, skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         match Self::read_kvs(&path, skiplist) {
             Ok(_) => unreachable!(),
             Err(err) => {
@@ -67,10 +73,11 @@ impl Wal {
         })
     }
 
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let mut buf = BytesMut::with_capacity(1024);
-        buf.put_u16(key.len() as u16);
-        buf.extend(key);
+    pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
+        let mut buf = BytesMut::with_capacity(key.raw_len() + value.len());
+        buf.put_u16(key.key_len() as u16);
+        buf.extend(key.key_ref());
+        buf.put_u64(key.ts());
         buf.put_u16(value.len() as u16);
         buf.extend(value);
         buf.put_u32(crc32fast::hash(&buf));

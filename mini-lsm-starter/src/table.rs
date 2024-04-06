@@ -17,7 +17,7 @@ use log::warn;
 
 use crate::block::Block;
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice, TS_MAX, TS_MIN};
+use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 use crate::mem_table::map_bound;
 
@@ -274,7 +274,7 @@ impl SsTable {
             let offs = blk.index(key);
             if offs < blk.offsets.len() {
                 let (k, lo, hi) = blk.entry_i(offs);
-                if key.cmp(&k.as_key_slice()) == Ordering::Equal {
+                if key.key_ref() == k.key_ref() {
                     return Ok(Some(Bytes::copy_from_slice(&blk.data[lo..hi])));
                 }
             }
@@ -284,17 +284,14 @@ impl SsTable {
 
     pub fn scan(
         table: Arc<Self>,
-        lower: Bound<&[u8]>,
-        upper: Bound<&[u8]>,
+        lower: Bound<KeySlice>,
+        upper: Bound<KeySlice>,
     ) -> Result<SsTableIterator> {
         let mut it = match lower {
-            Bound::Included(lo) => {
-                SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(lo, TS_MAX))?
-            }
+            Bound::Included(lo) => SsTableIterator::create_and_seek_to_key(table, lo)?,
             Bound::Excluded(lo) => {
-                let lower = KeySlice::from_slice(lo, TS_MIN);
-                let mut it = SsTableIterator::create_and_seek_to_key(table, lower)?;
-                if it.key().cmp(&lower) == Ordering::Equal {
+                let mut it = SsTableIterator::create_and_seek_to_key(table, lo)?;
+                if it.key().cmp(&lo) == Ordering::Equal {
                     it.next()?;
                 }
                 it
@@ -334,17 +331,15 @@ impl SsTable {
         self.max_ts
     }
 
-    pub fn overlap(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> bool {
+    pub fn overlap(&self, lower: Bound<KeySlice>, upper: Bound<KeySlice>) -> bool {
         match lower {
             Bound::Included(lo) => {
-                let lo = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lo), TS_MAX);
-                if self.last_key().cmp(&lo) == Ordering::Less {
+                if self.last_key().as_key_slice().cmp(&lo) == Ordering::Less {
                     return false;
                 }
             }
             Bound::Excluded(lo) => {
-                let lo = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(lo), TS_MIN);
-                if self.last_key().cmp(&lo) != Ordering::Greater {
+                if self.last_key().as_key_slice().cmp(&lo) != Ordering::Greater {
                     return false;
                 }
             }
@@ -352,14 +347,12 @@ impl SsTable {
         }
         match upper {
             Bound::Included(up) => {
-                let up = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(up), TS_MAX);
-                if self.first_key().cmp(&up) == Ordering::Greater {
+                if self.first_key().as_key_slice().cmp(&up) == Ordering::Greater {
                     return false;
                 }
             }
             Bound::Excluded(up) => {
-                let up = KeyBytes::from_bytes_with_ts(Bytes::copy_from_slice(up), TS_MIN);
-                if self.first_key().cmp(&up) != Ordering::Less {
+                if self.first_key().as_key_slice().cmp(&up) != Ordering::Less {
                     return false;
                 }
             }
@@ -368,10 +361,10 @@ impl SsTable {
         true
     }
 
-    pub fn compare(&self, key: KeyBytes) -> Ordering {
-        if self.first_key.cmp(&key) == Ordering::Greater {
+    pub fn compare(&self, key: &[u8]) -> Ordering {
+        if self.first_key.key_ref().cmp(key) == Ordering::Greater {
             Ordering::Greater
-        } else if self.last_key.cmp(&key) == Ordering::Less {
+        } else if self.last_key.key_ref().cmp(key) == Ordering::Less {
             Ordering::Less
         } else {
             Ordering::Equal

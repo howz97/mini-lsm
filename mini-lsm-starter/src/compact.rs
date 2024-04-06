@@ -179,14 +179,19 @@ impl LsmStorageInner {
         let mut output = vec![];
         while iter.is_valid() {
             let mut builder = SsTableBuilder::new(self.options.block_size);
-            while builder.estimated_size() < sst_limit {
-                let val = iter.value();
-                if !val.is_empty() {
-                    builder.add(iter.key(), val);
-                }
-                iter.next()?;
-                if !iter.is_valid() {
-                    break;
+            while iter.is_valid() && builder.estimated_size() < sst_limit {
+                let k = iter.key().key_ref().to_owned();
+                while iter.is_valid() && iter.key().key_ref() == k {
+                    let val = iter.value();
+                    if let Some(mvcc) = &self.mvcc {
+                        let key = iter.key();
+                        if key.ts() > mvcc.watermark() {
+                            builder.add(iter.key(), val);
+                        }
+                    } else if !val.is_empty() {
+                        builder.add(iter.key(), iter.value());
+                    }
+                    iter.next()?;
                 }
             }
             assert!(builder.estimated_size() >= sst_limit || !iter.is_valid());

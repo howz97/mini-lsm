@@ -88,8 +88,8 @@ impl LeveledCompactionController {
             let lower_lv = l + 1;
             let lower_level_sst_ids = snapshot.tables_overlap(
                 lower_lv,
-                Bound::Included(upper_table.first_key().key_ref()),
-                Bound::Included(upper_table.last_key().key_ref()),
+                Bound::Included(upper_table.first_key().as_key_slice()),
+                Bound::Included(upper_table.last_key().as_key_slice()),
             );
             Some(LeveledCompactionTask {
                 upper_level: max_lv,
@@ -138,7 +138,7 @@ impl LeveledCompactionController {
                 let p = lower_level
                     .binary_search_by(|tid| {
                         let sst = snapshot.sstables.get(tid).unwrap();
-                        sst.compare(left_key.clone())
+                        sst.compare(left_key.key_ref())
                     })
                     .unwrap_err();
                 let tail = lower_level.drain(p..).collect::<Vec<usize>>();

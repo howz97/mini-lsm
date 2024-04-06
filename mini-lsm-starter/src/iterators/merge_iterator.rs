@@ -78,7 +78,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     }
 
     fn next(&mut self) -> Result<()> {
-        let oldkey = self.key().to_key_vec();
+        let prev = self.key().to_key_vec();
         while self.is_valid() {
             let mut it = self.iters.pop().unwrap();
             it.1.next()?;
@@ -87,8 +87,8 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
             } else if !self.is_valid() {
                 return Ok(());
             }
-            assert!(self.key().cmp(&oldkey.as_key_slice()) != Ordering::Less);
-            if self.key().cmp(&oldkey.as_key_slice()) == Ordering::Greater {
+            assert!(self.key().cmp(&prev.as_key_slice()) != Ordering::Less);
+            if self.key().cmp(&prev.as_key_slice()) == Ordering::Greater {
                 break;
             }
         }

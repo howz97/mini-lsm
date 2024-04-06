@@ -17,10 +17,10 @@ use crate::compact::{
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeyBytes, KeySlice, TS_DEFAULT};
+use crate::key::{KeySlice, TS_DEFAULT, TS_MAX};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
-use crate::mem_table::MemTable;
+use crate::mem_table::{map_bound_test, MemTable};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -87,8 +87,8 @@ impl LsmStorageState {
     pub fn tables_overlap(
         &self,
         lv: usize,
-        lower: Bound<&[u8]>,
-        upper: Bound<&[u8]>,
+        lower: Bound<KeySlice>,
+        upper: Bound<KeySlice>,
     ) -> Vec<usize> {
         self.levels[lv - 1]
             .1
@@ -395,7 +395,7 @@ impl LsmStorageInner {
             compaction_controller: compact_ctl,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: None,
+            mvcc: Some(LsmMvccInner::new(0)),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
         Ok(storage)
@@ -416,6 +416,7 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        let key = KeySlice::from_slice(key, TS_MAX);
         let state = self.state.read();
         maybe_found!(state.memtable.get(key));
         for imt in &state.imm_memtables {
@@ -423,18 +424,15 @@ impl LsmStorageInner {
         }
         for tid in &state.l0_sstables {
             let sst = state.sstables.get(tid).unwrap();
-            maybe_found!(sst.get(KeySlice::from_slice(key, TS_DEFAULT))?);
+            maybe_found!(sst.get(key)?);
         }
         for (_, level) in &state.levels {
             if let Ok(i) = level.binary_search_by(|tid| {
                 let sst = state.sstables.get(tid).unwrap();
-                sst.compare(KeyBytes::from_bytes_with_ts(
-                    Bytes::copy_from_slice(key),
-                    TS_DEFAULT,
-                ))
+                sst.compare(key.key_ref())
             }) {
                 let sst = state.sstables.get(&level[i]).unwrap();
-                maybe_found!(sst.get(KeySlice::from_slice(key, TS_DEFAULT))?);
+                maybe_found!(sst.get(key)?);
             }
         }
         Ok(None)
@@ -442,17 +440,32 @@ impl LsmStorageInner {
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+        let (guard, ts) = if let Some(mvcc) = &self.mvcc {
+            let guard = mvcc.write_lock.lock();
+            let ts = mvcc.latest_commit_ts() + 1;
+            (Some(guard), ts)
+        } else {
+            (None, TS_DEFAULT)
+        };
         let mut sz = 0;
         {
             let state = self.state.read();
             for rec in batch {
                 sz = match rec {
                     WriteBatchRecord::Put(key, val) => {
-                        state.memtable.put(key.as_ref(), val.as_ref())?
+                        let key = KeySlice::from_slice(key.as_ref(), ts);
+                        state.memtable.put(key, val.as_ref())?
                     }
-                    WriteBatchRecord::Del(key) => state.memtable.put(key.as_ref(), b"")?,
+                    WriteBatchRecord::Del(key) => {
+                        let key = KeySlice::from_slice(key.as_ref(), ts);
+                        state.memtable.put(key, b"")?
+                    }
                 };
             }
+        }
+        if let Some(mvcc) = &self.mvcc {
+            mvcc.update_commit_ts(ts);
+            drop(guard);
         }
         if sz > self.options.target_sst_size {
             let guard = self.state_lock.lock();
@@ -491,6 +504,7 @@ impl LsmStorageInner {
         Self::path_of_wal_static(&self.path, id)
     }
 
+    #[allow(dead_code)]
     pub(super) fn sync_dir(&self) -> Result<()> {
         unimplemented!()
     }
@@ -585,6 +599,7 @@ impl LsmStorageInner {
     ) -> Result<FusedIterator<LsmIterator>> {
         let state = self.state.read();
 
+        let (lower, upper) = map_bound_test(lower, upper);
         let mut mem_iters = vec![];
         mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
         for imm in &state.imm_memtables {

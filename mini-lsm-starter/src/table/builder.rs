@@ -11,8 +11,6 @@ const MAX_NUM_BLOCKS: usize = 1024;
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
@@ -24,8 +22,6 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
             data: Vec::with_capacity(block_size * MAX_NUM_BLOCKS),
             meta: Vec::with_capacity(MAX_NUM_BLOCKS),
             block_size,
