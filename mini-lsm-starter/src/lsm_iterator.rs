@@ -16,15 +16,38 @@ type LsmIteratorInner = TwoMergeIterator<
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
+    snapshot: u64,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        let mut iter = Self { inner: iter };
-        if iter.is_valid() && iter.value().is_empty() {
-            iter.next()?;
-        }
+    pub(crate) fn new(inner: LsmIteratorInner, ts: u64) -> Result<Self> {
+        let mut iter = Self {
+            inner,
+            snapshot: ts,
+        };
+        iter.next_key(Vec::new())?;
         Ok(iter)
+    }
+
+    pub(crate) fn next_key(&mut self, mut prev: Vec<u8>) -> Result<()> {
+        while self.inner.is_valid() {
+            let key = self.inner.key();
+            if key.key_ref() == prev {
+                self.inner.next()?;
+                continue;
+            }
+            if key.ts() > self.snapshot {
+                self.inner.next()?;
+                continue;
+            }
+            if self.inner.value().is_empty() {
+                prev = Vec::from(key.key_ref());
+                self.inner.next()?;
+                continue;
+            }
+            break;
+        }
+        Ok(())
     }
 }
 
@@ -44,23 +67,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        let mut prev = Vec::from(self.inner.key().key_ref());
-        while self.inner.is_valid() {
-            self.inner.next()?;
-            if !self.inner.is_valid() {
-                break;
-            }
-            let key = self.inner.key().key_ref();
-            if key == prev {
-                continue;
-            }
-            if self.inner.value().is_empty() {
-                prev = Vec::from(key);
-                continue;
-            }
-            break;
-        }
-        Ok(())
+        self.next_key(Vec::from(self.inner.key().key_ref()))
     }
 
     fn num_active_iterators(&self) -> usize {

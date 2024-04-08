@@ -49,6 +49,14 @@ pub(crate) fn map_bound(bound: Bound<KeySlice>) -> Bound<KeyBytes> {
     }
 }
 
+pub(crate) fn map_bound_v(bound: Bound<&[u8]>) -> Bound<Bytes> {
+    match bound {
+        Bound::Included(x) => Bound::Included(Bytes::copy_from_slice(x)),
+        Bound::Excluded(x) => Bound::Excluded(Bytes::copy_from_slice(x)),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
 impl MemTable {
     /// Create a new mem-table.
     pub fn create(id: usize) -> Self {
@@ -172,6 +180,10 @@ impl MemTable {
     /// Only use this function when closing the database
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    pub fn max_ts(&self) -> Option<u64> {
+        self.map.iter().map(|ent| ent.key().ts()).max()
     }
 }
 

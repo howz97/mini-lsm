@@ -15,6 +15,7 @@ pub struct SsTableBuilder {
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
     keys_hash: Vec<u32>,
+    max_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -26,6 +27,7 @@ impl SsTableBuilder {
             meta: Vec::with_capacity(MAX_NUM_BLOCKS),
             block_size,
             keys_hash: Vec::with_capacity(64 * MAX_NUM_BLOCKS),
+            max_ts: 0,
         }
     }
 
@@ -35,6 +37,7 @@ impl SsTableBuilder {
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         self.keys_hash.push(farmhash::fingerprint32(key.key_ref()));
+        self.max_ts = self.max_ts.max(key.ts());
         if self.builder.add(key, value) {
             return;
         }
@@ -75,6 +78,8 @@ impl SsTableBuilder {
         self.data.extend(checksum.to_be_bytes());
         self.data.extend((bloom_offs as u32).to_be_bytes());
 
+        self.data.extend(self.max_ts.to_be_bytes());
+
         let file = FileObject::create(path.as_ref(), self.data)?;
         let first_key = self.meta.first().unwrap().first_key.clone();
         let last_key = self.meta.last().unwrap().last_key.clone();
@@ -88,7 +93,7 @@ impl SsTableBuilder {
             first_key,
             last_key,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts: self.max_ts,
         };
         Ok(sst)
     }

@@ -124,6 +124,51 @@ impl FileObject {
     }
 }
 
+pub struct ReverseReader {
+    file: File,
+    size: u64,
+    offset: u64,
+}
+
+impl ReverseReader {
+    pub fn new(file: FileObject) -> Self {
+        Self {
+            file: file.0.unwrap(),
+            size: file.1,
+            offset: file.1,
+        }
+    }
+
+    pub fn to_file_obj(self) -> FileObject {
+        FileObject(Some(self.file), self.size)
+    }
+
+    pub fn position(&self) -> u64 {
+        self.offset
+    }
+
+    pub fn get_u32(&mut self) -> Result<u32> {
+        self.offset -= 4;
+        let mut buf = [0u8; 4];
+        self.file.read_exact_at(&mut buf, self.offset)?;
+        Ok(u32::from_be_bytes(buf))
+    }
+
+    pub fn get_u64(&mut self) -> Result<u64> {
+        self.offset -= 8;
+        let mut buf = [0u8; 8];
+        self.file.read_exact_at(&mut buf, self.offset)?;
+        Ok(u64::from_be_bytes(buf))
+    }
+
+    pub fn get_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+        self.offset -= len;
+        let mut data = vec![0; len as usize];
+        self.file.read_exact_at(&mut data[..], self.offset)?;
+        Ok(data)
+    }
+}
+
 /// An SSTable.
 pub struct SsTable {
     /// The actual storage unit of SsTable, the format is as above.
@@ -149,27 +194,23 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let mut lenbytes = [0u8; 4];
-        file.read_exact_at(&mut lenbytes, file.size() - 4)?;
-        let b_offs = u32::from_be_bytes(lenbytes) as u64;
-        file.read_exact_at(&mut lenbytes, file.size() - 8)?;
-        let checksum = u32::from_be_bytes(lenbytes);
-        let b_size = file.size() - b_offs - 8;
-        let b_content = file.read(b_offs, b_size)?;
-        let bloom = if crc32fast::hash(&b_content) == checksum {
-            Some(Bloom::decode(&b_content)?)
+        let mut reader = ReverseReader::new(file);
+        // FIXME: This should be covered by checksum
+        let max_ts = reader.get_u64()?;
+        let bloom_offs = reader.get_u32()? as u64;
+        let checksum = reader.get_u32()?;
+        let bloom_content = reader.get_bytes(reader.position() - bloom_offs)?;
+        let bloom = if crc32fast::hash(&bloom_content) == checksum {
+            Some(Bloom::decode(&bloom_content)?)
         } else {
             // TODO: repair
             warn!("SsTable {id} bloom filter is corrupted");
             None
         };
 
-        file.read_exact_at(&mut lenbytes, b_offs - 4)?;
-        let m_offs = u32::from_be_bytes(lenbytes) as u64;
-        file.read_exact_at(&mut lenbytes, b_offs - 8)?;
-        let checksum = u32::from_be_bytes(lenbytes);
-        let m_size = b_offs - m_offs - 8;
-        let meta = Bytes::from(file.read(m_offs, m_size)?);
+        let meta_offs = reader.get_u32()? as u64;
+        let checksum = reader.get_u32()?;
+        let meta = Bytes::from(reader.get_bytes(reader.position() - meta_offs)?);
         if crc32fast::hash(&meta) != checksum {
             return Err(anyhow!("SsTable {id} metadata is corrupted"));
         }
@@ -177,15 +218,15 @@ impl SsTable {
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
         Ok(Self {
-            file,
+            file: reader.to_file_obj(),
             block_meta,
-            block_meta_offset: m_offs as usize,
+            block_meta_offset: meta_offs as usize,
             id,
             block_cache,
             first_key,
             last_key,
             bloom,
-            max_ts: 0,
+            max_ts,
         })
     }
 

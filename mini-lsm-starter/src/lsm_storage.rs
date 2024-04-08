@@ -21,6 +21,7 @@ use crate::key::{KeySlice, TS_DEFAULT, TS_MAX};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{map_bound_test, MemTable};
+use crate::mvcc::txn::Transaction;
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
@@ -230,7 +231,7 @@ impl MiniLsm {
         }))
     }
 
-    pub fn new_txn(&self) -> Result<()> {
+    pub fn new_txn(&self) -> Result<Arc<Transaction>> {
         self.inner.new_txn()
     }
 
@@ -317,6 +318,7 @@ impl LsmStorageInner {
 
         let path = path.as_ref();
         let mut next_sst_id = 0;
+        let mut max_ts = 0;
         let mut state = LsmStorageState::create(&options);
         let block_cache = Arc::new(BlockCache::new(1024));
         let manifest;
@@ -358,6 +360,7 @@ impl LsmStorageInner {
                 let p = Self::path_of_sst_static(path, id);
                 let f = FileObject::open(&p)?;
                 let sst = SsTable::open(id, Some(block_cache.clone()), f)?;
+                max_ts = max_ts.max(sst.max_ts());
                 state.sstables.insert(id, Arc::new(sst));
                 next_sst_id = next_sst_id.max(id);
             }
@@ -373,6 +376,18 @@ impl LsmStorageInner {
                 MemTable::create(mem_id)
             };
             state.memtable = Arc::new(memtable);
+            // recover latest commited timestamp
+            if let Some(ts) = state.memtable.max_ts() {
+                max_ts = max_ts.max(ts);
+            }
+            if let Some(ts) = state
+                .imm_memtables
+                .iter()
+                .map(|imm| imm.max_ts().unwrap())
+                .max()
+            {
+                max_ts = max_ts.max(ts);
+            }
         } else {
             println!("new database path {:?}", path);
             std::fs::create_dir_all(path)?;
@@ -395,7 +410,7 @@ impl LsmStorageInner {
             compaction_controller: compact_ctl,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: Some(LsmMvccInner::new(0)),
+            mvcc: Some(LsmMvccInner::new(max_ts)),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
         Ok(storage)
@@ -416,7 +431,11 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        let key = KeySlice::from_slice(key, TS_MAX);
+        self.get_with_ts(key, TS_MAX)
+    }
+
+    pub fn get_with_ts(&self, key: &[u8], ts: u64) -> Result<Option<Bytes>> {
+        let key = KeySlice::from_slice(key, ts);
         let state = self.state.read();
         maybe_found!(state.memtable.get(key));
         for imt in &state.imm_memtables {
@@ -586,19 +605,34 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    pub fn new_txn(&self) -> Result<()> {
-        // no-op
-        Ok(())
+    pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
+        let mvcc = match &self.mvcc {
+            Some(mvcc) => mvcc,
+            None => anyhow::bail!("MVCC is not enabled"),
+        };
+        Ok(mvcc.new_txn(self.clone(), false))
     }
 
-    /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let state = self.state.read();
+        let ts = match &self.mvcc {
+            Some(mvcc) => mvcc.latest_commit_ts(),
+            None => TS_DEFAULT,
+        };
+        self.scan_with_ts(lower, upper, ts)
+    }
 
+    /// Create an iterator over a range of keys.
+    pub fn scan_with_ts(
+        &self,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        ts: u64,
+    ) -> Result<FusedIterator<LsmIterator>> {
+        let state = self.state.read();
         let (lower, upper) = map_bound_test(lower, upper);
         let mut mem_iters = vec![];
         mem_iters.push(Box::new(state.memtable.scan(lower, upper)));
@@ -630,6 +664,6 @@ impl LsmStorageInner {
 
         let disk_merge = TwoMergeIterator::create(l0_merge, levels_merge)?;
         let global_merge = TwoMergeIterator::create(mem_merge, disk_merge)?;
-        Ok(FusedIterator::new(LsmIterator::new(global_merge)?))
+        Ok(FusedIterator::new(LsmIterator::new(global_merge, ts)?))
     }
 }
