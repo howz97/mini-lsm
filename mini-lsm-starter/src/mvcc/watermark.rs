@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::collections::BTreeMap;
 
 pub struct Watermark {
@@ -14,11 +11,27 @@ impl Watermark {
         }
     }
 
-    pub fn add_reader(&mut self, ts: u64) {}
+    pub fn add_reader(&mut self, ts: u64) {
+        if let Some(cnt) = self.readers.get_mut(&ts) {
+            *cnt += 1;
+        } else {
+            self.readers.insert(ts, 1);
+        }
+    }
 
-    pub fn remove_reader(&mut self, ts: u64) {}
+    pub fn remove_reader(&mut self, ts: u64) {
+        let cnt = self.readers.get_mut(&ts).expect("reader not found");
+        *cnt -= 1;
+        if *cnt == 0 {
+            self.readers.remove(&ts).unwrap();
+        }
+    }
 
     pub fn watermark(&self) -> Option<u64> {
-        Some(0)
+        self.readers.first_key_value().map(|(&ts, _)| ts)
+    }
+
+    pub fn num_retained_snapshots(&self) -> usize {
+        self.readers.len()
     }
 }

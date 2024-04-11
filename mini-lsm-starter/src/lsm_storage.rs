@@ -613,6 +613,10 @@ impl LsmStorageInner {
         Ok(mvcc.new_txn(self.clone(), false))
     }
 
+    pub fn mvcc(&self) -> &LsmMvccInner {
+        self.mvcc.as_ref().unwrap()
+    }
+
     pub fn scan(
         &self,
         lower: Bound<&[u8]>,
