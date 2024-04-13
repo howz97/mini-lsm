@@ -288,6 +288,8 @@ macro_rules! maybe_found {
     };
 }
 
+pub(crate) use maybe_found;
+
 impl Drop for LsmStorageInner {
     fn drop(&mut self) {
         self.maybe_flush().expect("LsmStorageInner flush failed");

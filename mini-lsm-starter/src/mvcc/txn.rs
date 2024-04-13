@@ -1,10 +1,13 @@
 use std::{
     collections::HashSet,
     ops::Bound,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
@@ -13,7 +16,7 @@ use parking_lot::Mutex;
 use crate::{
     iterators::{two_merge_iterator::TwoMergeIterator, StorageIterator},
     lsm_iterator::{FusedIterator, LsmIterator},
-    lsm_storage::LsmStorageInner,
+    lsm_storage::{maybe_found, LsmStorageInner, WriteBatchRecord},
     mem_table::map_bound_v,
 };
 
@@ -28,29 +31,62 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
+        // if self.committed.load(Ordering::Acquire) {
+        //     bail!("transaction has already been commited");
+        // }
+        maybe_found!(self.local_storage.get(key).map(|ent| ent.value().clone()));
         self.inner.get_with_ts(key, self.read_ts)
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
+        // if self.committed.load(Ordering::Acquire) {
+        //     bail!("transaction has already been commited");
+        // }
         let iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
-        let txn = TxnLocalIterator::new(
+        let mut txn = TxnLocalIterator::new(
             self.local_storage.clone(),
             |m| m.range((map_bound_v(lower), map_bound_v(upper))),
             (Bytes::new(), Bytes::new()),
         );
+        txn.next()?;
         TxnIterator::create(self.clone(), TwoMergeIterator::create(txn, iter)?)
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
-        unimplemented!()
+        // if self.committed.load(Ordering::Acquire) {
+        //     bail!("transaction has already been commited");
+        // }
+        self.local_storage
+            .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
-        unimplemented!()
+        // if self.committed.load(Ordering::Acquire) {
+        //     bail!("transaction has already been commited");
+        // }
+        self.local_storage
+            .insert(Bytes::copy_from_slice(key), Bytes::new());
     }
 
     pub fn commit(&self) -> Result<()> {
-        unimplemented!()
+        if self.committed.swap(true, Ordering::Release) {
+            bail!("transaction has already been commited");
+        }
+        let mut batch = Vec::with_capacity(self.local_storage.len());
+        self.local_storage.iter().for_each(|ent| {
+            if ent.value().is_empty() {
+                batch.push(WriteBatchRecord::Del(ent.key().clone()));
+            } else {
+                batch.push(WriteBatchRecord::Put(
+                    ent.key().clone(),
+                    ent.value().clone(),
+                ));
+            }
+        });
+        // for (k, v) in self.local_storage.into_iter() {
+        //     batch.push(WriteBatchRecord::Put(k, v));
+        // }
+        self.inner.write_batch(&batch)
     }
 }
 
@@ -114,7 +150,7 @@ impl StorageIterator for TxnLocalIterator {
 }
 
 pub struct TxnIterator {
-    txn: Arc<Transaction>,
+    _txn: Arc<Transaction>,
     iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
 }
 
@@ -123,7 +159,11 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        Ok(Self { txn, iter })
+        let mut iter = Self { _txn: txn, iter };
+        if iter.is_valid() && iter.value().is_empty() {
+            iter.next()?;
+        }
+        Ok(iter)
     }
 }
 
@@ -143,7 +183,13 @@ impl StorageIterator for TxnIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        self.iter.next()
+        loop {
+            self.iter.next()?;
+            if !self.is_valid() || !self.value().is_empty() {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
