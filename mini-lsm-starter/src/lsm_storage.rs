@@ -22,7 +22,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{map_bound_test, MemTable};
 use crate::mvcc::txn::Transaction;
-use crate::mvcc::LsmMvccInner;
+use crate::mvcc::{CommittedTxnData, LsmMvccInner};
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
@@ -46,6 +46,15 @@ pub struct LsmStorageState {
 pub enum WriteBatchRecord<T: AsRef<[u8]>> {
     Put(T, T),
     Del(T),
+}
+
+impl<T: AsRef<[u8]>> WriteBatchRecord<T> {
+    pub fn key(&self) -> &[u8] {
+        match self {
+            Self::Put(k, _) => k.as_ref(),
+            Self::Del(k) => k.as_ref(),
+        }
+    }
 }
 
 impl LsmStorageState {
@@ -236,7 +245,7 @@ impl MiniLsm {
     }
 
     pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        self.inner.write_batch(batch)
+        self.inner.txn_write_batch(batch)
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -457,6 +466,34 @@ impl LsmStorageInner {
             }
         }
         Ok(None)
+    }
+
+    pub fn txn_write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if self.mvcc.is_some() {
+            let _lock = self.mvcc().commit_lock.lock();
+            if self.options.serializable {
+                let commit_ts = self.mvcc().latest_commit_ts() + 1;
+                let key_hashes = batch
+                    .iter()
+                    .map(|rec| farmhash::hash32(rec.key()))
+                    .collect();
+                let txn_data = CommittedTxnData {
+                    key_hashes,
+                    read_ts: 0,
+                    commit_ts,
+                };
+                self.mvcc()
+                    .committed_txns
+                    .lock()
+                    .insert(commit_ts, txn_data);
+            }
+            self.write_batch(batch)
+        } else {
+            self.write_batch(batch)
+        }
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.

@@ -52,7 +52,7 @@ impl LeveledCompactionController {
         assert!(targets[self.options.max_levels - 1] > 0);
 
         let idx = targets.partition_point(|t| *t == 0);
-        if snapshot.l0_sstables.len() > self.options.level0_file_num_compaction_trigger {
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
             // TODO: limit to overlaped tables
             let (lower_level, lower_level_sst_ids) = snapshot.levels[idx].clone();
             return Some(LeveledCompactionTask {
