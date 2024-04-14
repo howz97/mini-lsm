@@ -9,9 +9,8 @@ use std::{
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 
-use crate::lsm_storage::LsmStorageInner;
-
 use self::{txn::Transaction, watermark::Watermark};
+use crate::lsm_storage::LsmStorageInner;
 
 pub(crate) struct CommittedTxnData {
     pub(crate) key_hashes: HashSet<u32>,
@@ -52,15 +51,20 @@ impl LsmMvccInner {
         ts.1.watermark().unwrap_or(ts.0)
     }
 
-    pub fn new_txn(&self, inner: Arc<LsmStorageInner>, _serializable: bool) -> Arc<Transaction> {
+    pub fn new_txn(&self, inner: Arc<LsmStorageInner>, serializable: bool) -> Arc<Transaction> {
         let read_ts = self.latest_commit_ts();
         self.ts.lock().1.add_reader(read_ts);
+        let key_hashes = if serializable {
+            Some(Mutex::new((HashSet::new(), HashSet::new())))
+        } else {
+            None
+        };
         Arc::new(Transaction {
             read_ts,
             inner,
             local_storage: Arc::new(SkipMap::new()),
             committed: Arc::new(AtomicBool::new(false)),
-            key_hashes: None,
+            key_hashes,
         })
     }
 }

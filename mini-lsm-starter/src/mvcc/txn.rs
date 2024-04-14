@@ -20,6 +20,8 @@ use crate::{
     mem_table::map_bound_v,
 };
 
+use super::CommittedTxnData;
+
 pub struct Transaction {
     pub(crate) read_ts: u64,
     pub(crate) inner: Arc<LsmStorageInner>,
@@ -30,18 +32,24 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    pub fn ssi_set(&self, key: &[u8], is_write: bool) {
+        if let Some(hset) = &self.key_hashes {
+            let h = farmhash::hash32(key);
+            if is_write {
+                hset.lock().0.insert(h);
+            } else {
+                hset.lock().1.insert(h);
+            }
+        }
+    }
+
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        // if self.committed.load(Ordering::Acquire) {
-        //     bail!("transaction has already been commited");
-        // }
+        self.ssi_set(key, false);
         maybe_found!(self.local_storage.get(key).map(|ent| ent.value().clone()));
         self.inner.get_with_ts(key, self.read_ts)
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
-        // if self.committed.load(Ordering::Acquire) {
-        //     bail!("transaction has already been commited");
-        // }
         let iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
         let mut txn = TxnLocalIterator::new(
             self.local_storage.clone(),
@@ -53,25 +61,48 @@ impl Transaction {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
-        // if self.committed.load(Ordering::Acquire) {
-        //     bail!("transaction has already been commited");
-        // }
+        self.ssi_set(key, true);
         self.local_storage
             .insert(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
     }
 
     pub fn delete(&self, key: &[u8]) {
-        // if self.committed.load(Ordering::Acquire) {
-        //     bail!("transaction has already been commited");
-        // }
-        self.local_storage
-            .insert(Bytes::copy_from_slice(key), Bytes::new());
+        self.put(key, &[]);
     }
 
     pub fn commit(&self) -> Result<()> {
         if self.committed.swap(true, Ordering::Release) {
             bail!("transaction has already been commited");
         }
+        let mvcc = self.inner.mvcc();
+        let _lock = mvcc.commit_lock.lock();
+        if let Some(rwset) = &self.key_hashes {
+            let rwset = rwset.lock();
+            if rwset.0.is_empty() {
+                return Ok(());
+            }
+            let commit_ts = mvcc.latest_commit_ts() + 1;
+            let mut committed = mvcc.committed_txns.lock();
+            for (_, txn) in committed.range(self.read_ts + 1..commit_ts) {
+                if rwset.1.intersection(&txn.key_hashes).count() > 0 {
+                    bail!("conflict with txn {}-{}", txn.read_ts, txn.commit_ts);
+                }
+            }
+            committed.insert(
+                commit_ts,
+                CommittedTxnData {
+                    key_hashes: rwset.0.clone(),
+                    read_ts: self.read_ts,
+                    commit_ts,
+                },
+            );
+
+            let wm = mvcc.watermark();
+            while *committed.first_entry().unwrap().key() <= wm {
+                committed.pop_first();
+            }
+        }
+
         let mut batch = Vec::with_capacity(self.local_storage.len());
         self.local_storage.iter().for_each(|ent| {
             if ent.value().is_empty() {
@@ -83,9 +114,6 @@ impl Transaction {
                 ));
             }
         });
-        // for (k, v) in self.local_storage.into_iter() {
-        //     batch.push(WriteBatchRecord::Put(k, v));
-        // }
         self.inner.write_batch(&batch)
     }
 }
@@ -150,7 +178,7 @@ impl StorageIterator for TxnLocalIterator {
 }
 
 pub struct TxnIterator {
-    _txn: Arc<Transaction>,
+    txn: Arc<Transaction>,
     iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
 }
 
@@ -159,9 +187,12 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        let mut iter = Self { _txn: txn, iter };
+        let mut iter = Self { txn, iter };
         if iter.is_valid() && iter.value().is_empty() {
             iter.next()?;
+        }
+        if iter.is_valid() {
+            iter.txn.ssi_set(iter.key(), false);
         }
         Ok(iter)
     }
@@ -185,7 +216,11 @@ impl StorageIterator for TxnIterator {
     fn next(&mut self) -> Result<()> {
         loop {
             self.iter.next()?;
-            if !self.is_valid() || !self.value().is_empty() {
+            if !self.is_valid() {
+                break;
+            }
+            if !self.value().is_empty() {
+                self.txn.ssi_set(self.key(), false);
                 break;
             }
         }

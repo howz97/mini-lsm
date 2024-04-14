@@ -498,15 +498,29 @@ impl LsmStorageInner {
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Put(key, value)];
-        self.write_batch(&batch)
+    pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
+        if self.mvcc.is_some() {
+            let txn = self.new_txn()?;
+            txn.put(key, value);
+            txn.commit()?;
+            Ok(())
+        } else {
+            let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Put(key, value)];
+            self.write_batch(&batch)
+        }
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, key: &[u8]) -> Result<()> {
-        let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Del(key)];
-        self.write_batch(&batch)
+    pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
+        if self.mvcc.is_some() {
+            let txn = self.new_txn()?;
+            txn.delete(key);
+            txn.commit()?;
+            Ok(())
+        } else {
+            let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Del(key)];
+            self.write_batch(&batch)
+        }
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -612,7 +626,7 @@ impl LsmStorageInner {
             Some(mvcc) => mvcc,
             None => anyhow::bail!("MVCC is not enabled"),
         };
-        Ok(mvcc.new_txn(self.clone(), false))
+        Ok(mvcc.new_txn(self.clone(), self.options.serializable))
     }
 
     pub fn mvcc(&self) -> &LsmMvccInner {
