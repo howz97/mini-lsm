@@ -1,5 +1,3 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 mod leveled;
 mod simple_leveled;
 mod tiered;
@@ -9,7 +7,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
 use crate::key::KeySlice;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
@@ -114,9 +112,9 @@ pub enum CompactionOptions {
 
 impl LsmStorageInner {
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
+        let bottom = task.compact_to_bottom_level();
         match task {
             CompactionTask::Leveled(task) => {
-                let bottom = task.is_lower_level_bottom_level;
                 if task.upper_level_sst_ids.len() == 1 {
                     let up_id = task.upper_level_sst_ids.first().unwrap();
                     let up_table = self.state.read().get_table(*up_id);
@@ -131,7 +129,6 @@ impl LsmStorageInner {
                 }
             }
             CompactionTask::Tiered(task) => {
-                let bottom = task.bottom_tier_included;
                 let mut iters = vec![];
                 for (_, tier) in &task.tiers {
                     let tier_tables = self.state.read().get_tables(tier);
@@ -142,7 +139,6 @@ impl LsmStorageInner {
                 self.compact_core(iter, bottom)
             }
             CompactionTask::Simple(task) => {
-                let bottom = task.is_lower_level_bottom_level;
                 if task.upper_level.is_none() {
                     self.compact_l0(&task.upper_level_sst_ids, &task.lower_level_sst_ids, bottom)
                 } else {
@@ -156,7 +152,7 @@ impl LsmStorageInner {
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
-            } => self.compact_l0(l0_sstables, l1_sstables, true),
+            } => self.compact_l0(l0_sstables, l1_sstables, bottom),
         }
     }
 
@@ -189,17 +185,35 @@ impl LsmStorageInner {
             let mut builder = SsTableBuilder::new(self.options.block_size);
             while iter.is_valid() && builder.estimated_size() < sst_limit {
                 let latest = iter.key().to_key_vec();
-                let mut top_under = true;
+                let mut once = true;
+                // let mut skip = false;
+                let filters = self.compaction_filters.lock();
+                for f in filters.iter() {
+                    let kickout = match f {
+                        CompactionFilter::Prefix(p) => {
+                            latest.key_ref().len() >= p.len()
+                                && latest.key_ref()[..p.len()] == p[..]
+                        }
+                    };
+                    if kickout {
+                        once = false;
+                        break;
+                    }
+                }
                 while iter.is_valid() && iter.key().key_ref() == latest.key_ref() {
+                    // if skip {
+                    //     iter.next()?;
+                    //     continue;
+                    // }
                     let val = iter.value();
                     if let Some(mvcc) = &self.mvcc {
                         if iter.key().ts() > mvcc.watermark() {
                             builder.add(iter.key(), val);
-                        } else if top_under {
+                        } else if once {
+                            once = false;
                             if !(val.is_empty() && to_bottom) {
                                 builder.add(iter.key(), val);
                             }
-                            top_under = false;
                         }
                     } else if !(val.is_empty() && to_bottom) {
                         builder.add(iter.key(), iter.value());

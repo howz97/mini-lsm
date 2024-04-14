@@ -30,15 +30,6 @@ impl LeveledCompactionController {
         Self { options }
     }
 
-    fn find_overlapping_ssts(
-        &self,
-        _snapshot: &LsmStorageState,
-        _sst_ids: &[usize],
-        _in_level: usize,
-    ) -> Vec<usize> {
-        unimplemented!()
-    }
-
     pub fn generate_compaction_task(
         &self,
         snapshot: &LsmStorageState,
