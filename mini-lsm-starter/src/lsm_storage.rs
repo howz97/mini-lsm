@@ -191,7 +191,7 @@ pub(crate) struct LsmStorageInner {
     next_sst_id: AtomicUsize,
     pub(crate) options: Arc<LsmStorageOptions>,
     pub(crate) compaction_controller: CompactionController,
-    pub(crate) manifest: Option<Manifest>,
+    pub(crate) manifest: Manifest,
     pub(crate) mvcc: Option<LsmMvccInner>,
     pub(crate) compaction_filters: Arc<Mutex<Vec<CompactionFilter>>>,
 }
@@ -419,7 +419,7 @@ impl LsmStorageInner {
             block_cache,
             next_sst_id: AtomicUsize::new(next_sst_id),
             compaction_controller: compact_ctl,
-            manifest: Some(manifest),
+            manifest,
             options: options.into(),
             mvcc: Some(LsmMvccInner::new(max_ts)),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
@@ -608,9 +608,8 @@ impl LsmStorageInner {
         } else {
             MemTable::create(id)
         };
-        if let Some(manifest) = &self.manifest {
-            manifest.add_record(_state_lock_observer, ManifestRecord::NewMemtable(id))?;
-        }
+        self.manifest
+            .add_record(_state_lock_observer, ManifestRecord::NewMemtable(id))?;
         {
             let mut state = self.state.write();
             let imm = state.memtable.clone();
@@ -638,12 +637,10 @@ impl LsmStorageInner {
             self.path_of_sst(imm_id),
         )?;
         if self.options.enable_wal {
-            fs::remove_file(self.path_of_wal(imm_id)).unwrap();
+            fs::remove_file(self.path_of_wal(imm_id))?;
         }
-        if let Some(manif) = &self.manifest {
-            let rec = ManifestRecord::Flush(imm_id);
-            manif.add_record(&_state_lock, rec).unwrap();
-        }
+        self.manifest
+            .add_record(&_state_lock, ManifestRecord::Flush(imm_id))?;
         {
             let mut state = self.state.write();
             state.sstables.insert(imm_id, Arc::new(sst));

@@ -293,9 +293,8 @@ impl LsmStorageInner {
             });
             snapshot = result;
             *self.state.write() = snapshot.clone();
-            if let Some(manif) = &self.manifest {
-                manif.add_record(&_state_lock, ManifestRecord::Compaction(task, output))?;
-            }
+            self.manifest
+                .add_record(&_state_lock, ManifestRecord::Compaction(task, output))?;
             dels.extend(del);
         }
         dels.into_iter().for_each(|id| {
