@@ -17,7 +17,7 @@ use crate::compact::{
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeySlice, TS_DEFAULT, TS_MAX};
+use crate::key::{KeySlice, TS_MAX};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::{Manifest, ManifestRecord};
 use crate::mem_table::{map_bound_test, MemTable};
@@ -192,7 +192,7 @@ pub(crate) struct LsmStorageInner {
     pub(crate) options: Arc<LsmStorageOptions>,
     pub(crate) compaction_controller: CompactionController,
     pub(crate) manifest: Manifest,
-    pub(crate) mvcc: Option<LsmMvccInner>,
+    pub(crate) mvcc: LsmMvccInner,
     pub(crate) compaction_filters: Arc<Mutex<Vec<CompactionFilter>>>,
 }
 
@@ -421,7 +421,7 @@ impl LsmStorageInner {
             compaction_controller: compact_ctl,
             manifest,
             options: options.into(),
-            mvcc: Some(LsmMvccInner::new(max_ts)),
+            mvcc: LsmMvccInner::new(max_ts),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
         Ok(storage)
@@ -472,39 +472,30 @@ impl LsmStorageInner {
         self: &Arc<Self>,
         batch: &[WriteBatchRecord<T>],
     ) -> Result<()> {
-        if self.mvcc.is_some() {
-            let _lock = self.mvcc().commit_lock.lock();
-            if self.options.serializable {
-                let commit_ts = self.mvcc().latest_commit_ts() + 1;
-                let key_hashes = batch
-                    .iter()
-                    .map(|rec| farmhash::hash32(rec.key()))
-                    .collect();
-                let txn_data = CommittedTxnData {
-                    key_hashes,
-                    read_ts: 0,
-                    commit_ts,
-                };
-                self.mvcc()
-                    .committed_txns
-                    .lock()
-                    .insert(commit_ts, txn_data);
-            }
-            self.write_batch(batch)
-        } else {
-            self.write_batch(batch)
+        let _lock = self.mvcc.commit_lock.lock();
+        if self.options.serializable {
+            let commit_ts = self.mvcc().latest_commit_ts() + 1;
+            let key_hashes = batch
+                .iter()
+                .map(|rec| farmhash::hash32(rec.key()))
+                .collect();
+            let txn_data = CommittedTxnData {
+                key_hashes,
+                read_ts: 0,
+                commit_ts,
+            };
+            self.mvcc()
+                .committed_txns
+                .lock()
+                .insert(commit_ts, txn_data);
         }
+        self.write_batch(batch)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        let (guard, ts) = if let Some(mvcc) = &self.mvcc {
-            let guard = mvcc.write_lock.lock();
-            let ts = mvcc.latest_commit_ts() + 1;
-            (Some(guard), ts)
-        } else {
-            (None, TS_DEFAULT)
-        };
+        let guard = self.mvcc.write_lock.lock();
+        let ts = self.mvcc.latest_commit_ts() + 1;
         let mut sz = 0;
         {
             let state = self.state.read();
@@ -521,10 +512,8 @@ impl LsmStorageInner {
                 };
             }
         }
-        if let Some(mvcc) = &self.mvcc {
-            mvcc.update_commit_ts(ts);
-            drop(guard);
-        }
+        self.mvcc.update_commit_ts(ts);
+        drop(guard);
         if sz > self.options.target_sst_size {
             let guard = self.state_lock.lock();
             if self.state.read().memtable.approximate_size() > self.options.target_sst_size {
@@ -536,28 +525,18 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
-        if self.mvcc.is_some() {
-            let txn = self.new_txn()?;
-            txn.put(key, value);
-            txn.commit()?;
-            Ok(())
-        } else {
-            let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Put(key, value)];
-            self.write_batch(&batch)
-        }
+        let txn = self.new_txn()?;
+        txn.put(key, value);
+        txn.commit()?;
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
-        if self.mvcc.is_some() {
-            let txn = self.new_txn()?;
-            txn.delete(key);
-            txn.commit()?;
-            Ok(())
-        } else {
-            let batch: [WriteBatchRecord<&[u8]>; 1] = [WriteBatchRecord::Del(key)];
-            self.write_batch(&batch)
-        }
+        let txn = self.new_txn()?;
+        txn.delete(key);
+        txn.commit()?;
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -656,15 +635,11 @@ impl LsmStorageInner {
     }
 
     pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
-        let mvcc = match &self.mvcc {
-            Some(mvcc) => mvcc,
-            None => anyhow::bail!("MVCC is not enabled"),
-        };
-        Ok(mvcc.new_txn(self.clone(), self.options.serializable))
+        Ok(self.mvcc.new_txn(self.clone(), self.options.serializable))
     }
 
     pub fn mvcc(&self) -> &LsmMvccInner {
-        self.mvcc.as_ref().unwrap()
+        &self.mvcc
     }
 
     pub fn scan(
@@ -672,10 +647,7 @@ impl LsmStorageInner {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let ts = match &self.mvcc {
-            Some(mvcc) => mvcc.latest_commit_ts(),
-            None => TS_DEFAULT,
-        };
+        let ts = self.mvcc.latest_commit_ts();
         self.scan_with_ts(lower, upper, ts)
     }
 

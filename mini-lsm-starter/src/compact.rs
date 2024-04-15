@@ -186,7 +186,6 @@ impl LsmStorageInner {
             while iter.is_valid() && builder.estimated_size() < sst_limit {
                 let latest = iter.key().to_key_vec();
                 let mut once = true;
-                // let mut skip = false;
                 let filters = self.compaction_filters.lock();
                 for f in filters.iter() {
                     let kickout = match f {
@@ -201,22 +200,13 @@ impl LsmStorageInner {
                     }
                 }
                 while iter.is_valid() && iter.key().key_ref() == latest.key_ref() {
-                    // if skip {
-                    //     iter.next()?;
-                    //     continue;
-                    // }
-                    let val = iter.value();
-                    if let Some(mvcc) = &self.mvcc {
-                        if iter.key().ts() > mvcc.watermark() {
-                            builder.add(iter.key(), val);
-                        } else if once {
-                            once = false;
-                            if !(val.is_empty() && to_bottom) {
-                                builder.add(iter.key(), val);
-                            }
-                        }
-                    } else if !(val.is_empty() && to_bottom) {
+                    if iter.key().ts() > self.mvcc.watermark() {
                         builder.add(iter.key(), iter.value());
+                    } else if once {
+                        once = false;
+                        if !(iter.value().is_empty() && to_bottom) {
+                            builder.add(iter.key(), iter.value());
+                        }
                     }
                     iter.next()?;
                 }
