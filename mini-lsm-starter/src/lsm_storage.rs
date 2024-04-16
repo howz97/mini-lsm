@@ -527,16 +527,14 @@ impl LsmStorageInner {
     pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
         let txn = self.new_txn()?;
         txn.put(key, value);
-        txn.commit()?;
-        Ok(())
+        txn.commit()
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
         let txn = self.new_txn()?;
         txn.delete(key);
-        txn.commit()?;
-        Ok(())
+        txn.commit()
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {

@@ -71,7 +71,7 @@ impl Transaction {
     }
 
     pub fn commit(&self) -> Result<()> {
-        if self.committed.swap(true, Ordering::Release) {
+        if self.committed.swap(true, Ordering::Relaxed) {
             bail!("transaction has already been commited");
         }
         let mvcc = self.inner.mvcc();
