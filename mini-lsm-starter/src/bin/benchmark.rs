@@ -55,7 +55,6 @@ fn main() {
     log::set_max_level(log::LevelFilter::Info);
 
     let args = Args::parse();
-    let dir = PathBuf::from(args.path);
     let compact_opts = match args.compaction {
         CompactionStrategy::None => CompactionOptions::NoCompaction,
         CompactionStrategy::Simple => CompactionOptions::Simple(SimpleLeveledCompactionOptions {
@@ -85,7 +84,7 @@ fn main() {
         serializable: args.serializable,
     };
 
-    let storage = MiniLsm::open(&dir, opts).unwrap();
+    let storage = MiniLsm::open(&args.path, opts).unwrap();
     let op_cnt = (args.num_op as u32) * 1024;
     let num_thd = args.parallel as u32;
     info!("benchmark start...");
