@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
+use log::info;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -339,7 +340,7 @@ impl LsmStorageInner {
             p
         };
         if manif_path.exists() {
-            println!("recover from path {:?}", path);
+            info!("recover from path {:?}", path);
             let (m, records) = Manifest::recover(manif_path)?;
             manifest = m;
             let mut mem_id = 0;
@@ -400,7 +401,7 @@ impl LsmStorageInner {
                 max_ts = max_ts.max(ts);
             }
         } else {
-            println!("new database path {:?}", path);
+            info!("new database path {:?}", path);
             std::fs::create_dir_all(path)?;
             manifest = Manifest::create(manif_path)?;
             let memtable = if options.enable_wal {
