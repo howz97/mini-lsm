@@ -12,7 +12,7 @@ use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 use anyhow::Result;
 pub use leveled::{LeveledCompactionController, LeveledCompactionOptions, LeveledCompactionTask};
-use log::info;
+use log::debug;
 use serde::{Deserialize, Serialize};
 pub use simple_leveled::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, SimpleLeveledCompactionTask,
@@ -72,7 +72,7 @@ impl CompactionController {
         task: &CompactionTask,
         output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        info!("compaction task {:?} output {:?}", task, output);
+        debug!("compaction task {:?} output {:?}", task, output);
         match (self, task) {
             (CompactionController::Leveled(ctrl), CompactionTask::Leveled(task)) => {
                 ctrl.apply_compaction_result(snapshot, task, output)

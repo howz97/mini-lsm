@@ -36,17 +36,23 @@ struct Args {
     parallel: u16,
     #[arg(long, default_value_t = 1)]
     iter: u16,
+    #[arg(long, default_value_t = 0)]
+    ratio: u8,
 }
 
-fn bench_put(storage: &MiniLsm, op_cnt: u32) {
+fn bench(storage: &MiniLsm, op_cnt: u32, ratio: u8) {
     let gen_key = |i| format!("{:14}", i);
     let gen_value = |i| format!("{:114}", i);
     let mut rng = rand::thread_rng();
     for _ in 0..op_cnt {
         let i = rng.gen::<u16>();
         let key = gen_key(i);
-        let val = gen_value(i);
-        storage.put(key.as_bytes(), val.as_bytes()).unwrap();
+        if (i as u8) < ratio {
+            storage.get(key.as_bytes()).unwrap();
+        } else {
+            let val = gen_value(i);
+            storage.put(key.as_bytes(), val.as_bytes()).unwrap();
+        }
     }
 }
 
@@ -92,7 +98,7 @@ fn main() {
         let start = time::SystemTime::now();
         std::thread::scope(|s| {
             (0..num_thd).for_each(|_| {
-                s.spawn(|| bench_put(&storage, op_cnt));
+                s.spawn(|| bench(&storage, op_cnt, args.ratio));
             })
         });
         let dur_secs = start.elapsed().unwrap().as_secs_f32();

@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    ops::Bound,
+    ops::{Add, Bound},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -83,7 +83,7 @@ impl Transaction {
             }
             let commit_ts = mvcc.latest_commit_ts() + 1;
             let mut committed = mvcc.committed_txns.lock();
-            for (_, txn) in committed.range(self.read_ts + 1..commit_ts) {
+            for (_, txn) in committed.range(self.read_ts.add(1)..commit_ts) {
                 if rwset.1.intersection(&txn.key_hashes).count() > 0 {
                     bail!("conflict with txn {}-{}", txn.read_ts, txn.commit_ts);
                 }
